@@ -1,0 +1,3 @@
+# Follow checked-in helpers relative to each script, without blanket warnings off.
+source-path=SCRIPTDIR
+external-sources=true

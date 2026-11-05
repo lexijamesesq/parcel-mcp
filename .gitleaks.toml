@@ -1,0 +1,20 @@
+# gitleaks config for parcel-mcp.
+# Operator-specific PII rules load from the FIXED install path
+# (${XDG_CONFIG_HOME:-$HOME/.config}/gitleaks/operator-rules.toml). The
+# [extend] path below is a repo-relative TOKEN, not a real on-disk path, and
+# it is never rewritten: dotty's hooks (gitleaks-common.sh's gl_resolve) run
+# gitleaks from a resolution directory holding one entry under that name, so
+# no gitignored symlink is needed in this checkout and no machine-specific
+# path can live in this file.
+#
+# There is deliberately no [allowlist] paths block. A path allowlist suppresses
+# EVERY rule for matching paths -- gitleaks' own default secret rules as well as
+# the operator rules -- so each entry is a total scanner blind spot, not a
+# PII-only exemption (dotty removed its own entries on 2026-07-09 after they
+# hid nine true-positive findings). To suppress a verified false positive,
+# use a per-rule allowlist in the operator-rules file, never a path entry here.
+
+title = "parcel-mcp gitleaks config"
+
+[extend]
+path = ".gitleaks-operator-rules.toml"

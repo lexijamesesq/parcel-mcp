@@ -1,0 +1,4 @@
+MD013: false
+# Narrow permitted markup; other inline HTML still reports structural problems.
+MD033:
+  allowed_elements: [a, br, details, summary, img, picture, source]

@@ -1,0 +1,10 @@
+# Structural YAML lint; syntax remains check-yaml's dialect-aware responsibility.
+extends: default
+rules:
+  line-length: disable
+  document-start: disable
+  trailing-spaces: disable  # trailing-whitespace owns this fix at commit
+  new-line-at-end-of-file: disable  # end-of-file-fixer owns it
+  truthy:
+    allowed-values: ['true', 'false']
+    check-keys: false  # GitHub Actions uses the YAML key `on`.

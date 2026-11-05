@@ -1,0 +1,18 @@
+parcel-mcp
+Copyright (c) 2026 parcel-mcp contributors
+
+This product includes the following third-party software:
+
+- jose (https://github.com/panva/jose) — MIT License, Copyright (c) Filip Skokan.
+  Used at runtime to verify Cloudflare Access JWTs.
+
+Development-only dependencies (not distributed with the deployed Worker) include
+wrangler, vitest, typescript, and @cloudflare/workers-types, each under its own
+license as declared in its package metadata.
+
+The MCP core (the two-tool shape, response field filtering, API-key redaction,
+upstream error classification, and the distributed rate limiter) derives from a
+single-owner Parcel connection originally built for ChatGPT's hosted apps. This
+project reworks that logic into a portable Cloudflare Worker with pluggable
+authentication. No credentials, owner identity, or deployment configuration from
+that original are included.

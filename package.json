@@ -1,0 +1,26 @@
+{
+  "name": "parcel-mcp",
+  "version": "1.0.0",
+  "description": "An MCP server that exposes your Parcel app's deliveries to any MCP client, deployed as a Cloudflare Worker and gated by Cloudflare Access.",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "jose": "^6.2.15"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261104.1",
+    "typescript": "5.9.3",
+    "vitest": "^5.1.0",
+    "wrangler": "^4.157.0"
+  }
+}

@@ -1,0 +1,94 @@
+# Native consumer baseline. See new-repo/README.md before applying.
+# Preserve newer compatible consumer pins and legitimate native extensions.
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/lexijamesesq/dotty
+    rev: v2026.11.04
+    hooks:
+      - id: gitleaks-staged
+        stages: [pre-commit]
+      - id: gitleaks-commit-msg
+        stages: [commit-msg]
+      - id: gitleaks-pre-push
+        stages: [pre-push]
+      - id: house-code
+        stages: [pre-commit]
+      - id: vale-self-narration
+        stages: [pre-commit]
+      - id: actionlint
+        stages: [pre-commit]
+      - id: zizmor
+        stages: [pre-commit]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.3
+    hooks:
+      - id: ruff
+        args: [--fix]
+        stages: [pre-commit]
+      - id: ruff-format
+        stages: [pre-commit]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-yaml
+        stages: [pre-commit]
+      - id: check-json
+        stages: [pre-commit]
+      - id: end-of-file-fixer
+        # Native type owners: Ruff, shfmt and HTML-only Prettier; regex: Biome.
+        exclude_types: [python, shell, html]
+        exclude: '\.(jsx?|tsx?|c(js|ts)|m(js|ts)|css|graphql|gql)$'
+        stages: [pre-commit]
+      - id: trailing-whitespace
+        args: ['--markdown-linebreak-ext=md,markdown']
+        exclude_types: [python, shell, html]
+        exclude: '\.(jsx?|tsx?|c(js|ts)|m(js|ts)|css|graphql|gql)$'
+        stages: [pre-commit]
+
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        stages: [pre-commit]
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.14.1-1
+    hooks:
+      - id: shfmt
+        stages: [pre-commit]
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        stages: [pre-commit]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.50.0
+    hooks:
+      - id: markdownlint
+        stages: [pre-commit]
+
+  # Biome owns web formatting; JSON uses the native syntax check above.
+  - repo: https://github.com/biomejs/pre-commit
+    rev: v2.6.4
+    hooks:
+      - id: biome-check
+        additional_dependencies: ["@biomejs/biome@2.6.5"]
+        exclude: '\.(jsonc?|vue|svelte|astro)$'
+        stages: [pre-commit]
+
+  # mirrors-prettier is ARCHIVED upstream: this rev (the last stable tag) never
+  # moves; only the prettier pin below does, capped below 4 in default.json so
+  # a stable v4 is never even proposed past the frozen wrapper.
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+        types_or: [html]
+        additional_dependencies: ["prettier@3.9.10"]
+        stages: [pre-commit]
