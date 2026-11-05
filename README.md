@@ -83,7 +83,8 @@ npm test            # 14 offline tests, no network or credentials needed
 
 ## Connect a client
 
-- **ChatGPT / Claude / other OAuth clients:** add a custom connector pointing at `https://<your-hostname>/mcp`. The client discovers Access's OAuth endpoints, opens a browser for you to log in, and connects. (Clients must support [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707) resource indicators, which Access requires; mainstream clients do.)
+- **ChatGPT:** Plugins → MCPs → Add → *Connect to a custom MCP*, type *Streamable HTTP*, URL `https://<your-hostname>/mcp`. ChatGPT discovers Access's OAuth endpoints and opens a browser for you to log in.
+- **Claude and other OAuth clients:** add a custom connector pointing at the same URL; the flow is the same. (Clients must support [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707) resource indicators, which Access requires; mainstream clients do.)
 - **CLI (e.g. Claude Code) and agents:** point the client at the same `/mcp` URL. Browser-capable clients use the OAuth flow; headless ones use a service token's headers.
 
 ## Project layout
