@@ -98,10 +98,6 @@ npm test            # 14 offline tests, no network or credentials needed
 | `test/` | Mock-only tests. No real Parcel key or network. |
 | `wrangler.json` | Worker configuration. Generic: the KV namespace id is the only value you fill in. |
 
-## Credits
-
-The MCP core — the two-tool shape, response filtering, redaction, error classification, and the distributed limiter — originated in a single-owner implementation for [ChatGPT's hosted apps](https://developers.openai.com/apps-sdk/). This project reworks it into a portable Worker with pluggable authentication so any MCP client can use it. See `NOTICE` for third-party licenses.
-
 ## License
 
 MIT — see `LICENSE`.
