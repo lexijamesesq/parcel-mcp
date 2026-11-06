@@ -5,7 +5,7 @@ default_stages: [pre-commit]
 
 repos:
   - repo: https://github.com/lexijamesesq/dotty
-    rev: v2026.11.05-2
+    rev: v2026.11.06
     hooks:
       - id: gitleaks-staged
         stages: [pre-commit]
@@ -78,7 +78,7 @@ repos:
     rev: v2.6.5
     hooks:
       - id: biome-check
-        additional_dependencies: ["@biomejs/biome@2.6.5"]
+        additional_dependencies: ["@biomejs/biome@2.6.6"]
         exclude: '\.(jsonc?|vue|svelte|astro)$'
         stages: [pre-commit]
 
