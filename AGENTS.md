@@ -24,19 +24,6 @@ prerequisites must fail clearly through the applicable hook or project command.
 Do not run project tests merely to install hooks, or rerun installation each
 session. `DOTTY_CHECKOUT` selects maintained reviewed source for shared commands.
 
-For estate Git/GitHub authoring from Codex (app or CLI), use the installed process
-boundary on every invocation:
-
-```sh
-~/.config/op-agent/bin/estate-codex --mode estate -- bash -c '"$APP_GH" pr list'
-```
-
-Run subsequent Git commands in the same launcher boundary. Use `"$APP_GH"` for
-GitHub operations inside that child shell. Missing Cody installation or binding
-blocks authoring; never fall back to human/Claude credentials or set `CLAUDECODE`.
-Claude keeps its enrolled profile and the same existing estate Git template.
-Git events run local checks independently of either agent's session startup.
-
 Use the native hook stages and repository commands. Do not bypass checks with
 `--no-verify`, `SKIP`, altered hook paths, or disabled scanners. Correct the finding
 and retry. Keep staged-content, commit-message and outgoing-history scans active;
