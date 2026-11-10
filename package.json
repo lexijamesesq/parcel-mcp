@@ -1,7 +1,7 @@
 {
   "name": "parcel-mcp",
   "version": "1.0.0",
-  "description": "An MCP server that exposes your Parcel app's deliveries to any MCP client, deployed as a Cloudflare Worker and gated by Cloudflare Access.",
+  "description": "An MCP server that exposes your Parcel app's deliveries to any MCP client. The Worker is an OAuth 2.1 authorization server; Cloudflare Access approves each grant.",
   "type": "module",
   "private": false,
   "license": "MIT",
@@ -15,6 +15,7 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
+    "@cloudflare/workers-oauth-provider": "^1.2.4",
     "jose": "^6.2.15"
   },
   "devDependencies": {

@@ -1,18 +1,17 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Identity } from "./mcp.ts";
 
-// Verifies the identity that Cloudflare Access asserts for an incoming request.
+// Verifies the Cloudflare Access JWT on the grant-approval request.
 //
-// When a request reaches the origin through Access — whether the client authenticated via Managed
-// OAuth (a human login) or a service token (a machine) — Access injects a signed JWT in the
-// `Cf-Access-Jwt-Assertion` header. We verify that JWT against the team's public keys, checking the
-// signature, the issuer (the team domain) and the audience (this application's AUD tag). A forged or
-// client-supplied header cannot pass, because the client does not hold Access's signing key — so this
-// check is the real protection even if the Worker is reached directly, not only a convenience.
+// Access protects only /authorize. After the owner signs in, Access injects a signed JWT in the
+// `Cf-Access-Jwt-Assertion` header. This checks that JWT against the team's public keys: signature,
+// issuer (the team domain), and audience (the Access application's AUD tag). A forged or
+// client-supplied header cannot pass, because the client does not hold Access's signing key.
+// /mcp does not read this header. MCP clients present access tokens the Worker itself issued.
 //
 // A verified user login carries `sub` (a stable user id) and `email`. A verified service token carries
-// `common_name` (the token's client id) and no email. Either is a valid, authorized identity: the
-// Access policy already decided who is allowed to reach this application.
+// `common_name` (the token's client id) and no email. The Access policy on /authorize decides which
+// of those may approve a grant. The application keeps no allow-list of its own.
 
 export type AccessConfig = { teamDomain: string; aud: string };
 

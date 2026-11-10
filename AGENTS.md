@@ -69,9 +69,10 @@ offline, and deploys happen from GitHub (see CI and deploy).
 ## Configuration
 
 Nothing deployment-specific is committed. `wrangler.json` is generic; the only
-value a deployment fills in is its KV namespace id, which the deploy workflow
-injects from the repository variable `RATE_LIMIT_KV_NAMESPACE_ID`. The Worker's
-runtime values live on Cloudflare, never in this repository:
+values a deployment fills in are its KV namespace ids, which the deploy workflow
+injects from the repository variables `RATE_LIMIT_KV_NAMESPACE_ID` (Parcel read
+throttle) and `OAUTH_KV_NAMESPACE_ID` (OAuth clients, grants, and tokens). The
+Worker's runtime values live on Cloudflare, never in this repository:
 
 ```yaml
 # Worker secret (set once with `wrangler secret put` or the dashboard)
@@ -98,9 +99,11 @@ required status. Margot reviews; Ollie merges.
 
 Every push to `main` deploys (`.github/workflows/deploy.yml`): Cloudflare's
 `wrangler-action`, SHA-pinned, in the `default-branch` environment. It reads the
-secret `CLOUDFLARE_API_TOKEN` and the variables `CLOUDFLARE_ACCOUNT_ID` and
-`RATE_LIMIT_KV_NAMESPACE_ID` from that environment. There is no manual deploy
-path from a workstation.
+secret `CLOUDFLARE_API_TOKEN` and the variables `CLOUDFLARE_ACCOUNT_ID`,
+`RATE_LIMIT_KV_NAMESPACE_ID`, and `OAUTH_KV_NAMESPACE_ID` from that environment.
+There is no manual deploy path from a workstation. The OAuth variable has to
+exist before a deploy of this Worker, or the workflow fails and the previous
+version keeps serving.
 
 ## Conventions
 

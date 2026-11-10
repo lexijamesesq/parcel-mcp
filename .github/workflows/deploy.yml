@@ -19,12 +19,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Bind the deployment's KV namespace
+      - name: Bind the deployment's KV namespaces
         env:
-          KV_NAMESPACE_ID: ${{ vars.RATE_LIMIT_KV_NAMESPACE_ID }}
+          RATE_LIMIT_KV_NAMESPACE_ID: ${{ vars.RATE_LIMIT_KV_NAMESPACE_ID }}
+          OAUTH_KV_NAMESPACE_ID: ${{ vars.OAUTH_KV_NAMESPACE_ID }}
         run: |
-          test -n "$KV_NAMESPACE_ID"
-          jq --arg id "$KV_NAMESPACE_ID" '.kv_namespaces[0].id = $id' wrangler.json > wrangler.deploy.json
+          test -n "$RATE_LIMIT_KV_NAMESPACE_ID"
+          test -n "$OAUTH_KV_NAMESPACE_ID"
+          jq \
+            --arg rate "$RATE_LIMIT_KV_NAMESPACE_ID" \
+            --arg oauth "$OAUTH_KV_NAMESPACE_ID" \
+            '(.kv_namespaces[] | select(.binding == "RATE_LIMIT").id) = $rate
+              | (.kv_namespaces[] | select(.binding == "OAUTH_KV").id) = $oauth' \
+            wrangler.json > wrangler.deploy.json
       - uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
