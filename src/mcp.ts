@@ -1,13 +1,14 @@
 // Core MCP handler for the Parcel connection. Framework-agnostic and transport-agnostic:
 // handleMcp(request, config, deps) takes a standard Request, configuration, and injectable
-// dependencies (identity verification, fetch, clock, rate reservation). The Worker entry point
-// (index.ts) wires the production dependencies; the test suite injects mocks and never touches
-// the network.
+// dependencies (approved identity, optional OAuth scopes, fetch, clock, rate reservation).
+// src/oauth.ts validates the access token and wires those dependencies; the test suite injects
+// mocks and never touches the network.
 //
-// Authorization model: the Worker entry point accepts only an access token this server issued
-// and passes the approved identity in `deps.identity`. Tool calls without that identity are
-// rejected. This module does not read proxy headers or tokens. Who may approve a grant is
-// decided at /authorize. See README "Security model".
+// Authorization model: the caller passes the already-approved identity in `deps.identity`.
+// Tool calls without that identity are rejected. When `deps.authorizedScopes` is set, each
+// tools/call must include the scope for that tool; a missing or unknown mapping is refused.
+// This module does not read proxy headers or tokens. Who may approve a grant is decided at
+// /authorize. See README "Security model".
 
 const ENDPOINT = "https://api.parcel.app/external/deliveries/?filter_mode=active";
 const ADD_ENDPOINT = "https://api.parcel.app/external/add-delivery/";
@@ -84,9 +85,21 @@ const TOOLS = [
 
 export type Config = { PARCEL_API_KEY?: string };
 export type Identity = { userId: string; email: string | null };
+/** Scope required for each tools/call name. Every tool must appear here. */
+export const TOOL_SCOPES: Record<(typeof TOOLS)[number]["name"], string> = {
+  get_connection_status: "active_deliveries_read",
+  list_active_deliveries: "active_deliveries_read",
+  add_delivery: "add_delivery",
+};
 export type Dependencies = {
   /** Approved caller. Omitted or null denies every tool call. */
   identity?: Identity | null;
+  /**
+   * Scopes on the access token. When set, tools/call is checked against TOOL_SCOPES
+   * using this same request parse; a missing scope is 403. Omitted only in unit tests
+   * that exercise the tools without an OAuth token.
+   */
+  authorizedScopes?: readonly string[];
   fetcher?: typeof fetch;
   now?: () => number;
   reserve?: (now: number) => Promise<number | null>;
@@ -96,11 +109,22 @@ const responseHeaders = {
   "Cache-Control": "private, no-store, max-age=0",
   "X-Content-Type-Options": "nosniff",
 };
-const json = (data: unknown, status = 200) =>
-  Response.json(data, { status, headers: responseHeaders });
+const json = (data: unknown, status = 200, extra: HeadersInit = {}) =>
+  Response.json(data, { status, headers: { ...responseHeaders, ...extra } });
 const rpc = (id: unknown, result: unknown) => json({ jsonrpc: "2.0", id, result });
 const error = (id: unknown, code: number, message: string, status = 200) =>
   json({ jsonrpc: "2.0", id, error: { code, message } }, status);
+const insufficientScope = (scope: string) =>
+  json(
+    {
+      error: "insufficient_scope",
+      error_description: "The access token lacks the required scope.",
+    },
+    403,
+    {
+      "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${scope}"`,
+    },
+  );
 const object = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object" && !Array.isArray(v);
 const toolResult = (data: unknown, isError = false) => ({
@@ -338,6 +362,13 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
   // The entry point supplies the identity from a validated access token. No identity => no access.
   const identity = deps.identity ?? null;
   if (!identity) return error(id, -32001, "Authentication required", 401);
+  // Same parse that named the tool decides the required scope. Unknown mapping or a missing
+  // scope refuses the call; the check is not skipped when authorizedScopes is present.
+  if (deps.authorizedScopes !== undefined) {
+    const needed = TOOL_SCOPES[params.name as keyof typeof TOOL_SCOPES];
+    if (typeof needed !== "string" || !deps.authorizedScopes.includes(needed))
+      return insufficientScope(typeof needed === "string" ? needed : (params.name as string));
+  }
 
   if (params.name === "get_connection_status")
     return rpc(id, toolResult(connectionStatus(identity, config)));

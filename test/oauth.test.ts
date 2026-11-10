@@ -419,14 +419,51 @@ test("a used refresh token is rejected once its replacement has been used", asyn
   assert.equal(((await replay.json()) as { error: string }).error, "invalid_grant");
   const stillCurrent = await refresh(call, clientId, third.refresh_token);
   assert.equal(stillCurrent.status, 200);
-  const grant = (await env.OAUTH_KV.get(
-    (
-      await env.OAUTH_KV.list({ prefix: "grant:" })
-    ).keys[0].name,
-    { type: "json" },
-  )) as { expiresAt: number };
-  const expected = Math.floor(Date.now() / 1000) + REFRESH_GRANT_TTL_SECONDS;
-  assert.ok(Math.abs(grant.expiresAt - expected) < 120);
+});
+
+test("refresh slides the 90-day idle window; idle past that is refused", async () => {
+  const env = workerEnv();
+  const call = install(env);
+  const realNow = Date.now.bind(Date);
+  let nowMs = realNow();
+  Date.now = () => nowMs;
+  try {
+    const { clientId, token } = await issueToken(call);
+    const grantKey = (await env.OAUTH_KV.list({ prefix: "grant:" })).keys[0].name;
+    const initial = (await env.OAUTH_KV.get(grantKey, { type: "json" })) as {
+      expiresAt: number;
+    };
+    const issuedAt = Math.floor(nowMs / 1000);
+    assert.ok(Math.abs(initial.expiresAt - (issuedAt + REFRESH_GRANT_TTL_SECONDS)) < 5);
+
+    // Advance well inside the window and refresh: expiry must move forward with the clock.
+    nowMs += 30 * 24 * 60 * 60 * 1000;
+    const rotated = await refresh(call, clientId, token.refresh_token);
+    assert.equal(rotated.status, 200, await rotated.clone().text());
+    const second = (await rotated.json()) as TokenBody;
+    const afterRefresh = (await env.OAUTH_KV.get(grantKey, { type: "json" })) as {
+      expiresAt: number;
+    };
+    const refreshedAt = Math.floor(nowMs / 1000);
+    assert.ok(afterRefresh.expiresAt > initial.expiresAt + 29 * 24 * 60 * 60);
+    assert.ok(Math.abs(afterRefresh.expiresAt - (refreshedAt + REFRESH_GRANT_TTL_SECONDS)) < 5);
+
+    // Keep the dynamically registered client across the idle jump. Its default
+    // registration TTL is also 90 days; without this the token endpoint would
+    // answer invalid_client before it could refuse the expired grant.
+    const clientKey = `client:${clientId}`;
+    const clientRecord = await env.OAUTH_KV.get(clientKey);
+    assert.ok(clientRecord);
+    await env.OAUTH_KV.put(clientKey, clientRecord);
+
+    // Idle until fewer than 60s remain on the grant (library minimum KV window).
+    nowMs = (afterRefresh.expiresAt - 30) * 1000;
+    const idle = await refresh(call, clientId, second.refresh_token);
+    assert.equal(idle.status, 400, await idle.clone().text());
+    assert.equal(((await idle.json()) as { error: string }).error, "invalid_grant");
+  } finally {
+    Date.now = realNow;
+  }
 });
 
 test("a token without add_delivery cannot add, and can still read", async () => {

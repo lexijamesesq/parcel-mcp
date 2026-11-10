@@ -14,7 +14,6 @@ import {
   authorizationErrorRedirect,
   CimdFetchError,
   type ConsentDescription,
-  insufficientScope,
   type OAuthHelpers,
   OAuthProvider,
   type OAuthResourceAuth,
@@ -33,14 +32,6 @@ export const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 export const REFRESH_GRANT_TTL_SECONDS = 90 * 24 * 60 * 60;
 
 export const OAUTH_SCOPES = ["active_deliveries_read", "add_delivery"] as const;
-
-const READ_SCOPE = "active_deliveries_read";
-const WRITE_SCOPE = "add_delivery";
-const TOOL_SCOPE: Record<string, string> = {
-  get_connection_status: READ_SCOPE,
-  list_active_deliveries: READ_SCOPE,
-  add_delivery: WRITE_SCOPE,
-};
 
 export interface WorkerEnv {
   PARCEL_API_KEY?: string;
@@ -73,14 +64,10 @@ export async function handleWorkerRequest(
 ): Promise<Response> {
   const target = publicResource(request);
   if (!target) return plain("The request origin is not a valid OAuth issuer.", 400);
-  let provider: OAuthProvider<WorkerEnv>;
-  try {
-    provider = createProvider(target, deps);
-  } catch (error) {
-    if (error instanceof TypeError)
-      return plain("The request origin is not a valid OAuth issuer.", 400);
-    throw error;
-  }
+  // OAuthProvider validates its options at construction. A TypeError here is a server
+  // misconfiguration, not a bad client request — leave it uncaught so the Worker logs
+  // and returns 500 instead of blaming the client with 400.
+  const provider = createProvider(target, deps);
   return provider.fetch(request, env, ctx);
 }
 
@@ -261,14 +248,13 @@ async function handleAuthenticatedMcp(
 ): Promise<Response> {
   const identity = identityFrom(ctx.props);
   if (!identity || !ctx.auth) return plain("Authentication required.", 401);
-  const tool = await requestedTool(request);
-  const needed = tool ? TOOL_SCOPE[tool] : undefined;
-  if (needed && !ctx.auth.scope.includes(needed)) return insufficientScope(ctx.auth, [needed]);
+  // Scope is checked inside handleMcp against the same request parse that names the tool.
   return handleMcp(
     request,
     { PARCEL_API_KEY: env.PARCEL_API_KEY },
     {
       identity,
+      authorizedScopes: ctx.auth.scope,
       reserve: deps.reserve,
       fetcher: deps.fetcher,
       now: deps.now,
@@ -309,57 +295,6 @@ function publicResource(request: Request): { origin: string; resource: string } 
   if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) return null;
   if (url.username || url.password) return null;
   return { origin: url.origin, resource: `${url.origin}/mcp` };
-}
-
-async function requestedTool(request: Request): Promise<string | null> {
-  if (request.method !== "POST") return null;
-  if (!request.headers.get("Content-Type")?.toLowerCase().includes("application/json")) return null;
-  let text: string;
-  try {
-    text = await boundedText(request.clone(), 8192);
-  } catch {
-    return null;
-  }
-  try {
-    const body: unknown = JSON.parse(text);
-    if (!body || typeof body !== "object" || Array.isArray(body)) return null;
-    const record = body as { method?: unknown; params?: unknown };
-    if (record.method !== "tools/call") return null;
-    const params = record.params;
-    if (!params || typeof params !== "object" || Array.isArray(params)) return null;
-    const name = (params as { name?: unknown }).name;
-    return typeof name === "string" ? name : null;
-  } catch {
-    return null;
-  }
-}
-
-async function boundedText(response: Request, limit: number): Promise<string> {
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const parts: Uint8Array[] = [];
-  let bytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bytes += value.byteLength;
-      if (bytes > limit) {
-        await reader.cancel();
-        throw new Error("body_limit");
-      }
-      parts.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const result = new Uint8Array(bytes);
-  let offset = 0;
-  for (const part of parts) {
-    result.set(part, offset);
-    offset += part.length;
-  }
-  return new TextDecoder().decode(result);
 }
 
 function escapeHtml(value: string): string {
