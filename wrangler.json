@@ -3,8 +3,12 @@
   "name": "parcel-mcp",
   "main": "src/index.ts",
   "compatibility_date": "2024-11-06",
+  "compatibility_flags": ["global_fetch_strictly_public", "cache_option_enabled"],
   "workers_dev": false,
   "keep_vars": true,
   "observability": { "enabled": true },
-  "kv_namespaces": [{ "binding": "RATE_LIMIT", "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" }]
+  "kv_namespaces": [
+    { "binding": "RATE_LIMIT", "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" },
+    { "binding": "OAUTH_KV", "id": "REPLACE_WITH_YOUR_OAUTH_KV_NAMESPACE_ID" }
+  ]
 }

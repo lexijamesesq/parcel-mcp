@@ -1,37 +1,26 @@
 import { createAccessVerifier } from "./access.ts";
-import { type Config, handleMcp } from "./mcp.ts";
+import { handleWorkerRequest, type WorkerEnv } from "./oauth.ts";
 import { reserveParcelRead } from "./rate.ts";
 
-// Cloudflare Worker entry point. Wires production dependencies to the transport-agnostic core and
-// serves the MCP endpoint at POST /mcp. All deployment-specific values come from the environment:
-// nothing about any particular deployment (team domain, audience, hostname) is baked into the code.
+// Cloudflare Worker entry point. The Worker is its own OAuth 2.1 authorization server.
+// /mcp accepts only access tokens this Worker issued. Cloudflare Access is checked only
+// when the owner approves a grant at /authorize. Deployment-specific values (team domain,
+// audience, hostname, namespace ids) come from the environment and are not compiled in.
 
-export interface Env {
-  PARCEL_API_KEY?: string; // secret: the Parcel account's API key
-  ACCESS_TEAM_DOMAIN?: string; // var: e.g. "your-team.cloudflareaccess.com"
-  ACCESS_AUD?: string; // var: the Access application's AUD tag
-  RATE_LIMIT?: KVNamespace; // binding: holds the shared throttle key
+export interface Env extends WorkerEnv {
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
+  RATE_LIMIT?: KVNamespace;
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-    if (url.pathname !== "/mcp")
-      return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
-    if (request.method !== "POST")
-      return new Response(null, {
-        status: 405,
-        headers: { Allow: "POST", "Cache-Control": "no-store" },
-      });
-
-    const config: Config = { PARCEL_API_KEY: env.PARCEL_API_KEY };
-    const verifyIdentity =
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const verifyAccess =
       env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD
         ? createAccessVerifier({ teamDomain: env.ACCESS_TEAM_DOMAIN, aud: env.ACCESS_AUD })
-        : undefined; // misconfiguration => no verifier => every data call fails closed with 401
-
-    return handleMcp(request, config, {
-      verifyIdentity,
+        : async () => null;
+    return handleWorkerRequest(request, env, ctx, {
+      verifyAccess,
       reserve: (now) => reserveParcelRead(env.RATE_LIMIT, now),
     });
   },

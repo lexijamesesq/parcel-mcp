@@ -1,6 +1,7 @@
 # Copy to `.dev.vars` (gitignored) for `wrangler dev`.
-# In production, PARCEL_API_KEY is a Worker secret (`wrangler secret put PARCEL_API_KEY`), and the
-# ACCESS_* values are plain Worker variables set in the Cloudflare dashboard (wrangler.json keeps them).
+# In production, PARCEL_API_KEY is a Worker secret (`wrangler secret put PARCEL_API_KEY`).
+# ACCESS_* are plain Worker variables (wrangler.json keeps them). They are used only to verify
+# the Cloudflare Access JWT on /authorize. OAuth clients and grants live in the OAUTH_KV binding.
 PARCEL_API_KEY=your-parcel-api-key
 ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
 ACCESS_AUD=your-access-application-aud-tag

@@ -4,11 +4,10 @@
 // (index.ts) wires the production dependencies; the test suite injects mocks and never touches
 // the network.
 //
-// Authorization model: this server trusts that a reverse proxy (Cloudflare Access) sits in front
-// of it and has already enforced an access policy. `deps.verifyIdentity` cryptographically verifies
-// the proxy's signed assertion, so a request that arrives without a valid, proxy-issued identity is
-// rejected. There is no per-user allow-list in the application itself — who may connect is decided
-// by the proxy's policy. See README "Security model".
+// Authorization model: the Worker entry point accepts only an access token this server issued
+// and passes the approved identity in `deps.identity`. Tool calls without that identity are
+// rejected. This module does not read proxy headers or tokens. Who may approve a grant is
+// decided at /authorize. See README "Security model".
 
 const ENDPOINT = "https://api.parcel.app/external/deliveries/?filter_mode=active";
 const ADD_ENDPOINT = "https://api.parcel.app/external/add-delivery/";
@@ -86,7 +85,8 @@ const TOOLS = [
 export type Config = { PARCEL_API_KEY?: string };
 export type Identity = { userId: string; email: string | null };
 export type Dependencies = {
-  verifyIdentity?: (request: Request) => Promise<Identity | null>;
+  /** Approved caller. Omitted or null denies every tool call. */
+  identity?: Identity | null;
   fetcher?: typeof fetch;
   now?: () => number;
   reserve?: (now: number) => Promise<number | null>;
@@ -335,8 +335,8 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
   )
     return error(id, -32602, "This tool accepts no arguments");
 
-  // Identity is established by the trusted proxy and verified here. No valid identity => no access.
-  const identity = deps.verifyIdentity ? await deps.verifyIdentity(request) : null;
+  // The entry point supplies the identity from a validated access token. No identity => no access.
+  const identity = deps.identity ?? null;
   if (!identity) return error(id, -32001, "Authentication required", 401);
 
   if (params.name === "get_connection_status")

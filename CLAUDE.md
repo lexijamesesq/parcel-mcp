@@ -1,7 +1,7 @@
 ---
 tags:
   - type/claude-repo
-description: "An MCP server that reads and adds Parcel app deliveries for any MCP client, deployed as a Cloudflare Worker behind Cloudflare Access."
+description: "An MCP server that reads and adds Parcel app deliveries for any MCP client, deployed as a Cloudflare Worker that is its own OAuth authorization server. Cloudflare Access approves grants."
 docs_home: "{workspace_root}/System"
 ---
 
