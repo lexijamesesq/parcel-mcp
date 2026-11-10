@@ -3,6 +3,7 @@ import { test } from "vitest";
 import { ADD_ENDPOINT } from "../src/mcp.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
+  CLIENT_REGISTRATION_TTL_SECONDS,
   handleWorkerRequest,
   REFRESH_GRANT_TTL_SECONDS,
   type WorkerEnv,
@@ -448,9 +449,9 @@ test("refresh slides the 90-day idle window; idle past that is refused", async (
     assert.ok(afterRefresh.expiresAt > initial.expiresAt + 29 * 24 * 60 * 60);
     assert.ok(Math.abs(afterRefresh.expiresAt - (refreshedAt + REFRESH_GRANT_TTL_SECONDS)) < 5);
 
-    // Keep the dynamically registered client across the idle jump. Its default
-    // registration TTL is also 90 days; without this the token endpoint would
-    // answer invalid_client before it could refuse the expired grant.
+    // Isolate grant idle from client registration: this jump never uses the token
+    // endpoint, so the library never renews the client. Re-store it without a KV
+    // expiry so the refusal below is invalid_grant from the grant, not invalid_client.
     const clientKey = `client:${clientId}`;
     const clientRecord = await env.OAUTH_KV.get(clientKey);
     assert.ok(clientRecord);
@@ -461,6 +462,47 @@ test("refresh slides the 90-day idle window; idle past that is refused", async (
     const idle = await refresh(call, clientId, second.refresh_token);
     assert.equal(idle.status, 400, await idle.clone().text());
     assert.equal(((await idle.json()) as { error: string }).error, "invalid_grant");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("regular refresh renews the client past the original registration expiry", async () => {
+  const env = workerEnv();
+  const call = install(env);
+  const realNow = Date.now.bind(Date);
+  let nowMs = realNow();
+  Date.now = () => nowMs;
+  try {
+    const { clientId, token } = await issueToken(call);
+    const clientKey = `client:${clientId}`;
+    const initial = (await env.OAUTH_KV.get(clientKey, { type: "json" })) as {
+      registrationExpiresAt: number;
+    };
+    const registeredAt = Math.floor(nowMs / 1000);
+    assert.ok(
+      Math.abs(initial.registrationExpiresAt - (registeredAt + CLIENT_REGISTRATION_TTL_SECONDS)) <
+        5,
+    );
+
+    // Past half the registration window: a successful refresh must renew the client.
+    nowMs += 50 * 24 * 60 * 60 * 1000;
+    const mid = await refresh(call, clientId, token.refresh_token);
+    assert.equal(mid.status, 200, await mid.clone().text());
+    const midBody = (await mid.json()) as TokenBody;
+    const renewed = (await env.OAUTH_KV.get(clientKey, { type: "json" })) as {
+      registrationExpiresAt: number;
+    };
+    const renewedAt = Math.floor(nowMs / 1000);
+    assert.ok(renewed.registrationExpiresAt > initial.registrationExpiresAt);
+    assert.ok(
+      Math.abs(renewed.registrationExpiresAt - (renewedAt + CLIENT_REGISTRATION_TTL_SECONDS)) < 5,
+    );
+
+    // Past the original registration expiry; with renewal, refresh still succeeds.
+    nowMs = (registeredAt + CLIENT_REGISTRATION_TTL_SECONDS + 24 * 60 * 60) * 1000;
+    const later = await refresh(call, clientId, midBody.refresh_token);
+    assert.equal(later.status, 200, await later.clone().text());
   } finally {
     Date.now = realNow;
   }

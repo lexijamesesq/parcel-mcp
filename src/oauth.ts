@@ -31,6 +31,15 @@ export const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
  */
 export const REFRESH_GRANT_TTL_SECONDS = 90 * 24 * 60 * 60;
 
+/**
+ * How long a dynamically registered client record lasts. The library renews it on a
+ * successful token response once past half this window, so an agent that keeps
+ * refreshing is never cut off by registration expiry. Leaving this unset would use
+ * the same library default; it is set here so the renewal contract is explicit.
+ * Unused grants still end at REFRESH_GRANT_TTL_SECONDS of idle.
+ */
+export const CLIENT_REGISTRATION_TTL_SECONDS = 90 * 24 * 60 * 60;
+
 export const OAUTH_SCOPES = ["active_deliveries_read", "add_delivery"] as const;
 
 export interface WorkerEnv {
@@ -94,6 +103,7 @@ function createProvider(
     // refresh moves the expiry that far out again.
     refreshTokenTTL: REFRESH_GRANT_TTL_SECONDS,
     refreshTokenIdleTTL: REFRESH_GRANT_TTL_SECONDS,
+    clientRegistrationTTL: CLIENT_REGISTRATION_TTL_SECONDS,
     allowPrivateUseRedirectUris: true,
     clientIdMetadataDocumentEnabled: true,
     resourceMetadata: {
