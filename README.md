@@ -113,7 +113,7 @@ Redirect URLs must be `https`, loopback `http` (`localhost`, `127.0.0.1`, `::1`)
 | `src/rate.ts` | The KV-backed Parcel read throttle. |
 | `src/index.ts` | Worker entry point. Wires Access, KV, and the Parcel secret. |
 | `test/` | Mock-only tests. No real Parcel key, Access tenant, or network. |
-| `wrangler.json` | Worker configuration. Generic: the two KV namespace ids are the values a deployment fills in. `global_fetch_strictly_public` and `cache_option_enabled` are required by Client ID Metadata Document fetches. |
+| `wrangler.json` | Worker configuration. Generic: deployment settings supply the KV and public rate-limit namespace IDs. `global_fetch_strictly_public` and `cache_option_enabled` are required by Client ID Metadata Document fetches. |
 
 ## License
 
