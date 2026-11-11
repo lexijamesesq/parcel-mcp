@@ -136,6 +136,12 @@ test("add_delivery surfaces Parcel errors with the key redacted and maps the dai
 test("initialization negotiates a supported protocol", async () => {
   const r = await handleMcp(request("initialize", { protocolVersion: "2024-11-05" }), {});
   assert.equal((await r.json()).result.protocolVersion, "2024-11-05");
+  const invalid = request("tools/list");
+  invalid.headers.set("MCP-Protocol-Version", "not-supported");
+  assert.equal((await handleMcp(invalid, {})).status, 400);
+  const supported = request("tools/list");
+  supported.headers.set("MCP-Protocol-Version", "2025-06-18");
+  assert.equal((await handleMcp(supported, {})).status, 200);
 });
 
 test("data calls without a verified identity are rejected", async () => {

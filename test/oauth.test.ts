@@ -29,6 +29,7 @@ function workerEnv(): WorkerEnv & { RATE_LIMIT: ReturnType<typeof memoryKv> } {
   return {
     PARCEL_API_KEY: "mock-only-api-value",
     OAUTH_KV: memoryKv() as unknown as KVNamespace,
+    PUBLIC_RATE_LIMIT: { limit: async () => ({ success: true }) },
     RATE_LIMIT: memoryKv(),
   };
 }
@@ -592,4 +593,49 @@ test("tools run with a worker-issued access token and report the approving ident
   const addedBody = JSON.parse((await added.json()).result.content[0].text);
   assert.equal(addedBody.added, true);
   assert.equal(upstream.url, ADD_ENDPOINT);
+});
+
+test("public request limits refuse excess requests and fail closed when unavailable", async () => {
+  for (const [limiter, status] of [
+    [{ limit: async () => ({ success: false }) }, 429],
+    [undefined, 503],
+    [
+      {
+        limit: async () => {
+          throw new Error("unavailable");
+        },
+      },
+      503,
+    ],
+  ] as const) {
+    const env = workerEnv();
+    env.PUBLIC_RATE_LIMIT = limiter;
+    const response = await install(env)(
+      new Request(`${ORIGIN}/.well-known/oauth-authorization-server`),
+    );
+    assert.equal(response.status, status);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+    if (status === 429) assert.equal(response.headers.get("Retry-After"), "60");
+  }
+});
+
+test("token and consent bodies are bounded even without Content-Length", async () => {
+  for (const path of ["/oauth/token", "/authorize"]) {
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array(32_768));
+        controller.enqueue(new Uint8Array(32_769));
+        controller.close();
+      },
+    });
+    const request = new Request(`${ORIGIN}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+      duplex: "half",
+    } as RequestInit);
+    const response = await install(workerEnv())(request);
+    assert.equal(response.status, 413);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+  }
 });

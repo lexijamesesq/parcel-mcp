@@ -1,3 +1,5 @@
+import { boundedBody } from "./body.ts";
+
 // Core MCP handler for the Parcel connection. Framework-agnostic and transport-agnostic:
 // handleMcp(request, config, deps) takes a standard Request, configuration, and injectable
 // dependencies (approved identity, optional OAuth scopes, fetch, clock, rate reservation).
@@ -60,7 +62,7 @@ const TOOLS = [
   {
     name: "list_active_deliveries",
     description:
-      "Read the active Parcel deliveries for the configured account. Parcel returns cached information; this does not refresh carriers. No arguments or write actions. At most one upstream request every three minutes; extra tracking information is excluded.",
+      "Read the active Parcel deliveries for the configured account. Parcel returns cached information; this does not refresh carriers. No arguments or write actions. Reads use a best-effort three-minute throttle; extra tracking information is excluded.",
     inputSchema: EMPTY_SCHEMA,
     annotations: {
       readOnlyHint: true,
@@ -250,31 +252,7 @@ async function addDelivery(fields: Record<string, string>, key: string, fetcher:
 }
 
 async function boundedText(response: Request | Response, limit: number) {
-  if (!response.body) return "";
-  const reader = response.body.getReader();
-  const parts: Uint8Array[] = [];
-  let bytes = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      bytes += value.byteLength;
-      if (bytes > limit) {
-        await reader.cancel();
-        throw new Error("body_limit");
-      }
-      parts.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const result = new Uint8Array(bytes);
-  let offset = 0;
-  for (const part of parts) {
-    result.set(part, offset);
-    offset += part.length;
-  }
-  return new TextDecoder().decode(result);
+  return new TextDecoder().decode(await boundedBody(response, limit));
 }
 
 function cleanDeliveries(deliveries: unknown[], key: string) {
@@ -315,6 +293,9 @@ function cleanDeliveries(deliveries: unknown[], key: string) {
 export async function handleMcp(request: Request, config: Config, deps: Dependencies = {}) {
   if (request.method !== "POST")
     return new Response(null, { status: 405, headers: { ...responseHeaders, Allow: "POST" } });
+  const protocol = request.headers.get("MCP-Protocol-Version");
+  if (protocol !== null && !(PROTOCOLS as readonly string[]).includes(protocol))
+    return json({ error: "Unsupported MCP protocol version" }, 400);
   const origin = request.headers.get("Origin");
   if (origin && origin !== new URL(request.url).origin)
     return json({ error: "Forbidden origin" }, 403);
@@ -340,7 +321,7 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
       protocolVersion:
         typeof requested === "string" && PROTOCOLS.includes(requested) ? requested : PROTOCOLS[0],
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "parcel-connection", version: "1.0.0" },
+      serverInfo: { name: "parcel-connection", version: "1.0.1" },
     });
   }
   if (body.method === "ping") return rpc(id, {});
