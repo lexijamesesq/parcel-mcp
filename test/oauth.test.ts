@@ -118,6 +118,8 @@ async function consent(
   assert.ok(html.includes("Test Agent"));
   assert.ok(!html.includes("<script>"));
   assert.ok(html.includes("client.example.test"));
+  if (scope.includes("active_deliveries_read"))
+    assert.ok(html.includes("Read active and recently completed deliveries"));
   const handle = /name="handle" value="([^"]+)"/.exec(html)?.[1];
   assert.ok(handle);
   const postHeaders: Record<string, string> = {
@@ -510,7 +512,12 @@ test("regular refresh renews the client past the original registration expiry", 
 });
 
 test("a token without add_delivery cannot add, and can still read", async () => {
-  const call = install(workerEnv());
+  const call = install(workerEnv(), async () =>
+    Response.json({
+      success: true,
+      deliveries: [{ status_code: 0, events: [] }],
+    }),
+  );
   const clientId = await register(call);
   const { verifier, challenge } = await pkce();
   const { redirect } = await consent(
@@ -527,6 +534,12 @@ test("a token without add_delivery cannot add, and can still read", async () => 
     mcp(token.access_token, "tools/call", { name: "get_connection_status", arguments: {} }),
   );
   assert.equal(status.status, 200);
+  const listed = await call(
+    mcp(token.access_token, "tools/call", { name: "list_deliveries", arguments: {} }),
+  );
+  const result = JSON.parse((await listed.json()).result.content[0].text);
+  assert.equal(result.filter_mode, "recent");
+  assert.equal(result.deliveries[0].status_label, "completed");
   const added = await call(
     mcp(token.access_token, "tools/call", {
       name: "add_delivery",
@@ -573,7 +586,7 @@ test("tools run with a worker-issued access token and report the approving ident
   assert.ok(!JSON.stringify(statusBody).includes("mock-only-api-value"));
 
   const listed = await call(
-    mcp(token.access_token, "tools/call", { name: "list_active_deliveries", arguments: {} }),
+    mcp(token.access_token, "tools/call", { name: "list_deliveries", arguments: {} }),
   );
   assert.equal(listed.status, 200);
   const deliveries = JSON.parse((await listed.json()).result.content[0].text);
