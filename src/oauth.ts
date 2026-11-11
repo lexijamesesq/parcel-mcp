@@ -18,6 +18,7 @@ import {
   OAuthProvider,
   type OAuthResourceAuth,
 } from "@cloudflare/workers-oauth-provider";
+import { boundedBody } from "./body.ts";
 import type { Identity } from "./mcp.ts";
 import { handleMcp } from "./mcp.ts";
 
@@ -45,6 +46,7 @@ export const OAUTH_SCOPES = ["active_deliveries_read", "add_delivery"] as const;
 export interface WorkerEnv {
   PARCEL_API_KEY?: string;
   OAUTH_KV?: KVNamespace;
+  PUBLIC_RATE_LIMIT?: Cloudflare.Env["PUBLIC_RATE_LIMIT"];
   /** Injected by the provider before it calls a handler. */
   OAUTH_PROVIDER?: OAuthHelpers;
 }
@@ -71,6 +73,28 @@ export async function handleWorkerRequest(
   ctx: ExecutionContext,
   deps: WorkerDependencies,
 ): Promise<Response> {
+  // Cloudflare supplies this header. Unauthenticated endpoints have no stable user ID yet.
+  try {
+    if (!env.PUBLIC_RATE_LIMIT) return plain("Request limiter unavailable.", 503);
+    const { success } = await env.PUBLIC_RATE_LIMIT.limit({
+      key: `parcel-mcp:${request.headers.get("CF-Connecting-IP") ?? "unknown"}`,
+    });
+    if (!success)
+      return new Response("Too many requests.", {
+        status: 429,
+        headers: { ...textHeaders, "Retry-After": "60" },
+      });
+  } catch {
+    return plain("Request limiter unavailable.", 503);
+  }
+  const pathname = new URL(request.url).pathname;
+  if (request.method === "POST" && (pathname === "/oauth/token" || pathname === "/authorize")) {
+    try {
+      request = new Request(request, { body: await boundedBody(request, 65_536) });
+    } catch {
+      return plain("Invalid or oversized form body.", 413);
+    }
+  }
   const target = publicResource(request);
   if (!target) return plain("The request origin is not a valid OAuth issuer.", 400);
   // OAuthProvider validates its options at construction. A TypeError here is a server

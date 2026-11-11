@@ -62,7 +62,7 @@ caller's object store. Distinguish source tests from actual installed-agent proo
 
 ## Setup
 
-Node.js 22 or newer. `npm ci` installs everything, including wrangler as a dev
+Node.js 22 or newer. `npm ci` installs everything, including Wrangler as a dev
 dependency. Nothing here needs a Cloudflare login: tests and typecheck run
 offline, and deploys happen from GitHub (see CI and deploy).
 
@@ -76,7 +76,7 @@ Worker's runtime values live on Cloudflare, never in this repository:
 
 ```yaml
 # Worker secret (set once with `wrangler secret put` or the dashboard)
-PARCEL_API_KEY: "op://Private/Parcelapp/api key"
+PARCEL_API_KEY: "<your Parcel API key>"
 # Worker variables, dashboard-managed; wrangler.json's keep_vars preserves them
 ACCESS_TEAM_DOMAIN: "<team>.cloudflareaccess.com"
 ACCESS_AUD: "<Access application AUD tag>"
@@ -97,13 +97,22 @@ Every pull request runs the shared estate check (`.github/workflows/ci.yml`,
 calling Dotty's `estate-pr-ci.yml@v1`); `Shared / Pre-Merge Checks` is the
 required status. Margot reviews; Ollie merges.
 
-Every push to `main` deploys (`.github/workflows/deploy.yml`): Cloudflare's
+Every push to `main` runs `npm ci`, `npm test`, and `npm run typecheck` before
+deploying and publishing a source release. These are deployment gates, not an
+additional required PR check. The serialized workflow uses the local
+`.github/scripts/tag-package-release.sh` to create immutable annotated
+`parcel-mcp--v<package version>` tags and GitHub releases.
+
+Deployment runs (`.github/workflows/deploy.yml`): Cloudflare's
 `wrangler-action`, SHA-pinned, in the `default-branch` environment. It reads the
 secret `CLOUDFLARE_API_TOKEN` and the variables `CLOUDFLARE_ACCOUNT_ID`,
 `RATE_LIMIT_KV_NAMESPACE_ID`, and `OAUTH_KV_NAMESPACE_ID` from that environment.
 There is no manual deploy path from a workstation. The OAuth variable has to
 exist before a deploy of this Worker, or the workflow fails and the previous
 version keeps serving.
+
+Regenerate binding declarations after config changes with
+`npx wrangler types --include-runtime false`.
 
 ## Conventions
 

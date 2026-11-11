@@ -33,7 +33,7 @@ MCP client ──HTTPS──> Worker
 - **`/mcp` accepts only an access token this Worker issued.** A missing, invalid, or expired token gets `401` with a `WWW-Authenticate` challenge pointing at the protected-resource metadata. An old Access session or service token is not a credential for `/mcp`.
 - **The Parcel API key stays a Worker secret.** The Worker calls Parcel with it and returns a filtered result. The key is not a client credential.
 
-Token lifetimes live in `src/oauth.ts`: `ACCESS_TOKEN_TTL_SECONDS` (1 hour) and `REFRESH_GRANT_TTL_SECONDS` (90 days). The same 90-day value is the new grant's lifetime and the idle lifetime. Every successful refresh rotates the refresh token and starts the 90 days over. The immediately previous refresh token stays valid until the replacement is used, so a client that lost the refresh response can retry once. After that use, the older token is rejected.
+Token lifetimes live in `src/oauth.ts`: `ACCESS_TOKEN_TTL_SECONDS` (1 hour) and `REFRESH_GRANT_TTL_SECONDS` (90 days). The same 90-day value is the new grant's lifetime and the idle lifetime. Every successful refresh rotates the refresh token and starts the 90 days over. The immediately previous refresh token stays valid until the replacement is used, so a client that lost the refresh response can retry with it. Once the replacement is used, the older token is rejected.
 
 ## Security model
 
@@ -42,17 +42,19 @@ Token lifetimes live in `src/oauth.ts`: `ACCESS_TOKEN_TTL_SECONDS` (1 hour) and 
 - **Never serve this on `*.workers.dev`.** The issuer and the resource URL are the request origin. `workers_dev` is off; serve one hostname only. A second route would be a second issuer.
 - **The Parcel API key is a Worker secret.** It never appears in source, logs, responses, or client configuration. The server redacts the key from any upstream text before returning it, and classifies upstream errors without echoing their bodies.
 - **Fail closed.** If the Access variables are missing, `/authorize` refuses every grant. If the access token has no identity, tool calls are refused. If the key or the rate limiter is unavailable, data calls return an error rather than leaking or proceeding.
-- **Refresh grants have no absolute end date.** A stolen refresh token keeps working for as long as it is used at least every 90 days. There is no revocation UI. To cut grants off, delete the keys in the OAuth KV namespace (or create a new namespace, point `OAUTH_KV_NAMESPACE_ID` at it, and redeploy) and connect the agents again. A client that still holds a token can also revoke it at `POST /oauth/token` with `token_type_hint=refresh_token` ([RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009)).
-- **KV is eventually consistent.** A rotated or deleted token can be accepted once more from a stale replica.
+- **Refresh grants have no absolute end date.** A stolen refresh token can keep working while it is used at least every 90 days. Use the targeted revocation and containment procedures below; removing an Access session does not revoke Worker-issued grants.
+- **KV is eventually consistent.** A stale replica can temporarily accept a rotated or deleted token; revocation is not globally instantaneous.
 - **Client ID Metadata Documents** are enabled, so a client may use an HTTPS URL as its `client_id`. The Worker fetches that document. The `global_fetch_strictly_public` compatibility flag keeps that fetch on the public internet. Dynamic registration remains available for clients that do not use a metadata document.
 
 ## Rate limiting
 
-Parcel's API is read **at most once every ~3 minutes**, enforced by one KV key that expires when the window closes (see `src/rate.ts`). Calls inside the window are refused with a `retry_at` time and never reach Parcel. KV is eventually consistent, so two simultaneous calls can occasionally both pass; Parcel answers the extra one with a 429, which the server reports cleanly. **All deployments that share one Parcel API key must share one rate-limit KV namespace**, or the shared allowance is not enforced. The OAuth namespace is separate and does not throttle Parcel.
+The read throttle uses a KV key to target one upstream attempt every three minutes. A visible reservation returns `retry_at` without calling Parcel. KV is eventually consistent and its read/write pair is not atomic: concurrent calls can admit multiple attempts. This is a **best-effort throttle**, not a strict quota. Parcel's own 429 response remains authoritative. Deployments sharing a Parcel API key should share the `RATE_LIMIT` namespace; `OAUTH_KV` is separate.
+
+A native Cloudflare rate limiter also protects public requests before OAuth dispatch, targeting 60 requests per minute per client IP in each Cloudflare location. Shared egress IPs share this allowance. Cloudflare's counters are approximate; this is abuse mitigation, not a global quota. Denial returns 429 with `Retry-After`; an unavailable binding returns 503. Token and consent POST bodies are limited to 64 KiB; registration retains the provider's 1 MiB limit and MCP requests retain their 8 KiB limit.
 
 ## Privacy
 
-Delivery data — tracking numbers, descriptions, events — is personal data. The Worker does not log it, and you should not add logging that does. OAuth error logs record only the HTTP status and the OAuth error code. The approving user's email is stored in the encrypted token props, not in the grant's plaintext metadata.
+Delivery data — tracking numbers, descriptions, events — is personal data. The Worker does not log it, and you should not add logging that does. OAuth error logs record only the HTTP status and the OAuth error code. Query strings are redacted in Worker observability; traces are sampled at 10%. The approving user's email is stored in the encrypted token props, not in the grant's plaintext metadata.
 
 ## Deploy your own
 
@@ -64,57 +66,29 @@ npm test            # offline tests; no network or credentials
 npm run typecheck
 ```
 
-1. **Create two KV namespaces.** One throttles Parcel reads. One stores OAuth clients, grants, and tokens. Do not reuse one namespace for both.
+1. Create separate `RATE_LIMIT` and `OAUTH_KV` namespaces in Cloudflare. The first holds read reservations; the second holds clients, grants, and tokens.
+2. Configure the GitHub `default-branch` environment, restricted to `main`, with secret `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit for your account) and variables `CLOUDFLARE_ACCOUNT_ID`, `RATE_LIMIT_KV_NAMESPACE_ID`, and `OAUTH_KV_NAMESPACE_ID`. The workflow fills the two KV IDs by binding name; do not commit deployment IDs. Choose a rate-limit `namespace_id` in `wrangler.json` that is unused in your account; bindings with the same ID share counters.
+3. Deploy through the GitHub workflow, then set the Worker secret `PARCEL_API_KEY` in the Cloudflare dashboard. It is never a client credential. Attach exactly one custom hostname, such as `parcel.example.com`; keep `workers_dev` disabled.
+4. Create a self-hosted Cloudflare Access application for exactly that hostname's `authorize` path, with an Allow policy restricted to the owner. Do not use `authorize/*`, a whole-host application, or a Service Auth policy. Leave **Managed OAuth disabled**: the Worker provides OAuth discovery and tokens. See [Access paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/) and [Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/).
+5. Set the Worker's plaintext variables `ACCESS_TEAM_DOMAIN` (for example `your-team.cloudflareaccess.com`, without `https://`) and `ACCESS_AUD` (the Access application's AUD tag). `keep_vars` preserves them across deploys. Missing values prevent new grants.
+6. Verify discovery returns JSON with your hostname as `issuer`, unauthenticated `/mcp` returns 401 with protected-resource metadata in its challenge, and `/authorize` requires the owner's Access login. Then connect only the clients you intend to authorize.
 
-   ```sh
-   npx wrangler kv namespace create RATE_LIMIT
-   npx wrangler kv namespace create OAUTH_KV
-   ```
+### Delivery and releases
 
-   For a deploy from GitHub, do not commit the ids. Set repository variables on the `default-branch` environment (Settings → Environments → `default-branch` → Environment variables):
+`.github/workflows/deploy.yml` runs on every push to `main`. A credential-free job installs the lockfile and runs the existing Vitest suite and TypeScript check. Both deployment and source release depend on its success. These are deployment gates; the repository's shared PR check remains its required merge check.
 
-   - `RATE_LIMIT_KV_NAMESPACE_ID`
-   - `OAUTH_KV_NAMESPACE_ID`
+Deployment uses the configured GitHub environment and Cloudflare's SHA-pinned Wrangler action. The serialized workflow also runs the local `tag-package-release.sh`, creating an immutable annotated `parcel-mcp--v<version>` tag and a GitHub source release. It does not publish an npm package. Source release and Worker deployment have separate job results: verify both before declaring a version shipped.
 
-   The deploy workflow writes those into `wrangler.json` by binding name. `OAUTH_KV_NAMESPACE_ID` has to exist before the merge that adds this binding. If it is missing, the deploy fails and the previous Worker keeps serving.
+For a new release, update `package.json`, the root package entry and version in `package-lock.json`, the MCP `serverInfo.version` in `src/mcp.ts`, and `CHANGELOG.md`. Existing tags are never moved. Dependency or documentation changes that leave the version unchanged do not create another release. Forks must supply their own deployment settings; estate-specific shared PR governance is separate from this Worker delivery workflow.
 
-   For a manual deploy from a checkout, paste the ids into `wrangler.json` and do not commit them.
+## Operations and recovery
 
-2. **Set the Parcel secret and deploy** (GitHub does this on merge to `main`; a workstation deploy is not the path this repo uses).
-
-   ```sh
-   npx wrangler secret put PARCEL_API_KEY
-   npx wrangler deploy
-   ```
-
-3. **Attach one hostname** (Workers & Pages → your worker → Settings → Domains & Routes → add a custom domain on your zone, for example `parcel.example.com`). The config sets `workers_dev: false` so the Worker is not also served on `*.workers.dev`.
-
-4. **Set the Access variables** on the Worker (Settings → Variables and Secrets, type *Plaintext*). `wrangler.json` sets `keep_vars` so later deploys preserve them:
-
-   - `ACCESS_TEAM_DOMAIN` — your team domain, such as `your-team.cloudflareaccess.com`, with no `https://`.
-   - `ACCESS_AUD` — the AUD tag of the Access application that protects `/authorize` (step 5). If you edit the existing application and its tag does not change, leave the variable as it is.
-
-5. **Scope Cloudflare Access to `/authorize` only, and turn Managed OAuth off.** This is a dashboard change. Do it after the new Worker is deployed, then reconnect clients. While the old whole-host application is still in front, Access answers discovery and `/mcp` itself and this server's tokens are not what clients see.
-
-   In the [Cloudflare dashboard](https://dash.cloudflare.com/), go to **Zero Trust → Access controls → Applications** (some dashboards still label this **Access → Applications**).
-
-   1. Open the self-hosted application for this Worker's hostname. Edit that application. Do not leave a second application that still matches the whole hostname or `/mcp`. A more specific path wins only for the path it names; a whole-host application would keep protecting everything else.
-   2. Set the application path to exactly `authorize`. The public hostname stays the Worker's custom domain. Do not use `authorize/*`: a wildcard path does not cover the path itself, so `/authorize` would miss the policy. Do not leave the path empty. Query strings are not part of an application path; a request to `/authorize?response_type=code&...` still matches the path `authorize`.
-   3. Keep a single **Allow** policy for the owner (for example *Include → Emails* with that address, and One-time PIN or your identity provider). Remove any **Service Auth** policy that was added so a machine could call `/mcp`. A service token that can open `/authorize` can approve a 90-day grant without an interactive login.
-   4. Open **Advanced settings** and turn **Managed OAuth off**, then save. Managed OAuth replaces this server's own `WWW-Authenticate` and `/.well-known` documents. `/authorize` needs Access's browser login, not Access acting as the OAuth server. The same docs: [Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/) ("do not enable this feature" when the origin runs its own OAuth server) and [Application paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/).
-   5. Copy the application's **AUD** tag. If it differs from the Worker's `ACCESS_AUD` variable, update that variable. `ACCESS_TEAM_DOMAIN` stays the team domain.
-
-   Confirm, while logged out of Access:
-
-   - `GET https://<your-hostname>/.well-known/oauth-authorization-server` is JSON whose `issuer` is `https://<your-hostname>`, not a `cloudflareaccess.com` host.
-   - `GET https://<your-hostname>/mcp` with no token is `401` and the `WWW-Authenticate` header's `resource_metadata` points at `https://<your-hostname>/.well-known/oauth-protected-resource/mcp`.
-   - Opening `https://<your-hostname>/authorize` in a browser shows the Access login, not a JSON `invalid_token` body.
-
-6. **Reconnect each agent once** after the Access change. See below. Do not rotate `PARCEL_API_KEY` for this cutover.
-
-### Deploying from GitHub
-
-`.github/workflows/deploy.yml` deploys on every push to `main` with Cloudflare's [wrangler-action](https://github.com/cloudflare/wrangler-action). It needs, in the repository's `default-branch` environment: the secret `CLOUDFLARE_API_TOKEN` (an API token with *Workers Scripts: Edit* on your account) and the variables `CLOUDFLARE_ACCOUNT_ID`, `RATE_LIMIT_KV_NAMESPACE_ID`, and `OAUTH_KV_NAMESPACE_ID`. In a fork the workflow does nothing until you add your own.
+- After deployment, confirm the workflow's verification and deployment jobs succeeded, inspect the active Worker version in Cloudflare, and call `get_connection_status` using an already authorized client. This does not spend Parcel's read allowance. Check source release separately. No delivery write is needed for a routine smoke check.
+- A client can revoke its own grant using an RFC 7009 form POST to `/oauth/token` with its `client_id`, `token` (refresh token), and `token_type_hint=refresh_token`, plus its registered client authentication method if applicable. Use the client's secure credential storage; never put tokens into command history or logs. Revoking the refresh token removes that grant and its access tokens. There is no operator revocation UI.
+- If a credential is compromised and the client cannot revoke it, contain access at Cloudflare first. Replacing `OAUTH_KV` with an empty namespace and redeploying invalidates **all** clients and grants, requires fresh registration and consent, and must be a deliberate account-wide recovery decision. Do not clear OAuth storage for an ordinary sign-in error. Access policy changes alone do not invalidate existing Worker tokens.
+- For a defective code release, revert the offending change through a PR to redeploy the corrected source. For urgent recovery, an authorized operator can roll back the Worker deployment in Cloudflare, then reconcile `main` before the next deploy. Worker rollback does not restore KV data or revoke grants. See [rollback limitations](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
+- Rotate a compromised Parcel API key in Parcel and update the Worker secret through the dashboard. Do not expose its value in a ticket or client configuration.
+- If `add_delivery` times out or reports an uncertain upstream failure, inspect Parcel before retrying. The upstream operation may have succeeded; blindly retrying can duplicate a delivery or spend its daily allowance.
 
 ## Connect a client
 
@@ -127,7 +101,7 @@ Point the client at `https://<your-hostname>/mcp` (Streamable HTTP).
 
 Redirect URLs must be `https`, loopback `http` (`localhost`, `127.0.0.1`, `::1`), or a private-use scheme such as `cursor://` for a native app. The consent page shows where the code will be sent. Remote `http` is rejected.
 
-`get_connection_status` then reports `authenticated_user_id` and `authenticated_user_email` from the Access login that approved the grant (a service token used at `/authorize` has an id and no email).
+`get_connection_status` then reports `authenticated_user_id` and `authenticated_user_email` from the Access login that approved the grant.
 
 ## Project layout
 

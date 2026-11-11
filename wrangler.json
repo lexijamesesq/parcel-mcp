@@ -3,12 +3,38 @@
   "name": "parcel-mcp",
   "main": "src/index.ts",
   "compatibility_date": "2024-11-06",
-  "compatibility_flags": ["global_fetch_strictly_public", "cache_option_enabled"],
+  "compatibility_flags": [
+    "global_fetch_strictly_public",
+    "cache_option_enabled"
+  ],
   "workers_dev": false,
   "keep_vars": true,
-  "observability": { "enabled": true },
+  "observability": {
+    "enabled": true,
+    "redact_query_string": true,
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
+  },
   "kv_namespaces": [
-    { "binding": "RATE_LIMIT", "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID" },
-    { "binding": "OAUTH_KV", "id": "REPLACE_WITH_YOUR_OAUTH_KV_NAMESPACE_ID" }
+    {
+      "binding": "RATE_LIMIT",
+      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+    },
+    {
+      "binding": "OAUTH_KV",
+      "id": "REPLACE_WITH_YOUR_OAUTH_KV_NAMESPACE_ID"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "PUBLIC_RATE_LIMIT",
+      "namespace_id": "584209317",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    }
   ]
 }
