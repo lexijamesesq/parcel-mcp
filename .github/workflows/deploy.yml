@@ -36,18 +36,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Bind the deployment's KV namespaces
+      - name: Bind the deployment's namespaces
         env:
           RATE_LIMIT_KV_NAMESPACE_ID: ${{ vars.RATE_LIMIT_KV_NAMESPACE_ID }}
           OAUTH_KV_NAMESPACE_ID: ${{ vars.OAUTH_KV_NAMESPACE_ID }}
+          PUBLIC_RATE_LIMIT_NAMESPACE_ID: ${{ vars.PUBLIC_RATE_LIMIT_NAMESPACE_ID }}
         run: |
           test -n "$RATE_LIMIT_KV_NAMESPACE_ID"
           test -n "$OAUTH_KV_NAMESPACE_ID"
+          [[ "$PUBLIC_RATE_LIMIT_NAMESPACE_ID" =~ ^[1-9][0-9]*$ ]]
           jq \
             --arg rate "$RATE_LIMIT_KV_NAMESPACE_ID" \
             --arg oauth "$OAUTH_KV_NAMESPACE_ID" \
+            --arg public_rate "$PUBLIC_RATE_LIMIT_NAMESPACE_ID" \
             '(.kv_namespaces[] | select(.binding == "RATE_LIMIT").id) = $rate
-              | (.kv_namespaces[] | select(.binding == "OAUTH_KV").id) = $oauth' \
+              | (.kv_namespaces[] | select(.binding == "OAUTH_KV").id) = $oauth
+              | (.ratelimits[] | select(.name == "PUBLIC_RATE_LIMIT").namespace_id) = $public_rate' \
             wrangler.json > wrangler.deploy.json
       - uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:

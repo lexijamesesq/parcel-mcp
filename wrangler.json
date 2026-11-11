@@ -30,7 +30,7 @@
   "ratelimits": [
     {
       "name": "PUBLIC_RATE_LIMIT",
-      "namespace_id": "584209317",
+      "namespace_id": "1",
       "simple": {
         "limit": 60,
         "period": 60
