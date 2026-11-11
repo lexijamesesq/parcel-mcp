@@ -16,6 +16,18 @@ const ENDPOINT = "https://api.parcel.app/external/deliveries/?filter_mode=recent
 const ADD_ENDPOINT = "https://api.parcel.app/external/add-delivery/";
 const MIN_INTERVAL_MS = 180_001;
 const PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
+// Parcel's documented status codes; unknown values never imply completion.
+const STATUS_LABELS: Record<number, string> = {
+  0: "completed",
+  1: "frozen",
+  2: "in_transit",
+  3: "awaiting_pickup",
+  4: "out_for_delivery",
+  5: "not_found",
+  6: "failed_attempt",
+  7: "exception",
+  8: "information_received",
+};
 const EMPTY_SCHEMA = { type: "object", properties: {}, additionalProperties: false };
 const ADD_FIELDS = {
   tracking_number: 100,
@@ -254,19 +266,6 @@ async function addDelivery(fields: Record<string, string>, key: string, fetcher:
 async function boundedText(response: Request | Response, limit: number) {
   return new TextDecoder().decode(await boundedBody(response, limit));
 }
-
-// Parcel's documented status codes; unknown values never imply completion.
-const STATUS_LABELS: Record<number, string> = {
-  0: "completed",
-  1: "frozen",
-  2: "in_transit",
-  3: "awaiting_pickup",
-  4: "out_for_delivery",
-  5: "not_found",
-  6: "failed_attempt",
-  7: "exception",
-  8: "information_received",
-};
 
 function cleanDeliveries(deliveries: unknown[], key: string) {
   const clean = (v: unknown, limit = 1000) =>
