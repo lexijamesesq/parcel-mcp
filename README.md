@@ -11,10 +11,21 @@ An agent that calls the server regularly does not need a scheduled sign-in. Acce
 | Tool | Arguments | What it does |
 | --- | --- | --- |
 | `get_connection_status` | none | Reports the identity that approved the grant, and whether the server is configured. Reveals no deliveries and no credentials. |
-| `list_active_deliveries` | none | Returns the account's active deliveries — carrier, description, tracking number, expected dates, status, and up to 30 events each. Parcel serves cached data; this does not poll carriers. |
-| `add_delivery` | `tracking_number`, `carrier_code`, `description`; optional `postcode`, `email` | Adds one delivery to the account. Parcel allows 20 add requests per day including failed ones, so clients should check `list_active_deliveries` first. Carrier codes: [supported_carriers.json](https://api.parcel.app/external/supported_carriers.json). |
+| `list_deliveries` | none | Returns the account's active and recently completed deliveries — carrier, description, tracking number, expected dates, status codes and labels, and up to 30 events each. Parcel serves cached data; this does not poll carriers. |
+| `add_delivery` | `tracking_number`, `carrier_code`, `description`; optional `postcode`, `email` | Adds one delivery to the account. Parcel allows 20 add requests per day including failed ones, so clients should check `list_deliveries` first. Carrier codes: [supported_carriers.json](https://api.parcel.app/external/supported_carriers.json). |
 
-The first two are annotated read-only. `add_delivery` is the only write path, and it can only create — nothing can modify or delete a delivery. A grant carries `active_deliveries_read` and `add_delivery`. Clients that omit `scope` receive both.
+The first two are annotated read-only. `add_delivery` is the only write path, and it can only create — nothing can modify or delete a delivery. A grant carries `active_deliveries_read` and `add_delivery`. Clients that omit `scope` receive both. The legacy identifier `active_deliveries_read` now authorizes the recent view; it is retained so existing read grants continue to work. Consent describes that access explicitly.
+
+`list_deliveries` always requests Parcel's `recent` view and accepts no filter argument.
+This is not a full delivery archive: Parcel does not document the recent retention window,
+and responses are capped at 200 deliveries with a `truncated` flag. A completed delivery
+has `status_code: 0` and `status_label: "completed"`; unknown statuses are labeled
+`unknown`. Disappearance from the list is not proof of delivery. Use the returned status
+and events rather than inferring completion from absence.
+
+Version 2 replaces `list_active_deliveries` with `list_deliveries`; clients must refresh
+tool discovery and update instructions that name the old tool. Existing grants remain
+valid; no reauthorization is required solely for this change.
 
 ## How it works
 

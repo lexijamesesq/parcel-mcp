@@ -12,7 +12,7 @@ import { boundedBody } from "./body.ts";
 // This module does not read proxy headers or tokens. Who may approve a grant is decided at
 // /authorize. See README "Security model".
 
-const ENDPOINT = "https://api.parcel.app/external/deliveries/?filter_mode=active";
+const ENDPOINT = "https://api.parcel.app/external/deliveries/?filter_mode=recent";
 const ADD_ENDPOINT = "https://api.parcel.app/external/add-delivery/";
 const MIN_INTERVAL_MS = 180_001;
 const PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -60,9 +60,9 @@ const TOOLS = [
     },
   },
   {
-    name: "list_active_deliveries",
+    name: "list_deliveries",
     description:
-      "Read the active Parcel deliveries for the configured account. Parcel returns cached information; this does not refresh carriers. No arguments or write actions. Reads use a best-effort three-minute throttle; extra tracking information is excluded.",
+      "Read active and recently completed Parcel deliveries for the configured account (recent view, not full history). Completion requires status_code 0; disappearance from the list does not prove delivery. Parcel returns cached information; this does not refresh carriers. No arguments or write actions. Reads use a best-effort three-minute throttle; extra tracking information is excluded.",
     inputSchema: EMPTY_SCHEMA,
     annotations: {
       readOnlyHint: true,
@@ -74,7 +74,7 @@ const TOOLS = [
   {
     name: "add_delivery",
     description:
-      "Add one delivery to the Parcel account by tracking number. Check list_active_deliveries first: adding a tracking number that is already tracked wastes budget. Parcel allows 20 add requests per day including failed ones, and rejects tracking numbers in an unknown format. The new delivery shows no tracking data until Parcel first updates it.",
+      "Add one delivery to the Parcel account by tracking number. Check list_deliveries first: adding a tracking number that is already tracked wastes budget. Parcel allows 20 add requests per day including failed ones, and rejects tracking numbers in an unknown format. The new delivery shows no tracking data until Parcel first updates it.",
     inputSchema: ADD_SCHEMA,
     annotations: {
       readOnlyHint: false,
@@ -90,7 +90,7 @@ export type Identity = { userId: string; email: string | null };
 /** Scope required for each tools/call name. Every tool must appear here. */
 export const TOOL_SCOPES: Record<(typeof TOOLS)[number]["name"], string> = {
   get_connection_status: "active_deliveries_read",
-  list_active_deliveries: "active_deliveries_read",
+  list_deliveries: "active_deliveries_read",
   add_delivery: "add_delivery",
 };
 export type Dependencies = {
@@ -255,6 +255,19 @@ async function boundedText(response: Request | Response, limit: number) {
   return new TextDecoder().decode(await boundedBody(response, limit));
 }
 
+// Parcel's documented status codes; unknown values never imply completion.
+const STATUS_LABELS: Record<number, string> = {
+  0: "completed",
+  1: "frozen",
+  2: "in_transit",
+  3: "awaiting_pickup",
+  4: "out_for_delivery",
+  5: "not_found",
+  6: "failed_attempt",
+  7: "exception",
+  8: "information_received",
+};
+
 function cleanDeliveries(deliveries: unknown[], key: string) {
   const clean = (v: unknown, limit = 1000) =>
     typeof v === "string" ? v.replaceAll(key, "[redacted]").slice(0, limit) : undefined;
@@ -275,6 +288,10 @@ function cleanDeliveries(deliveries: unknown[], key: string) {
       for (const name of ["status_code", "timestamp_expected", "timestamp_expected_end"]) {
         if (typeof d[name] === "number" && Number.isFinite(d[name])) result[name] = d[name];
       }
+      result.status_label =
+        typeof result.status_code === "number"
+          ? (STATUS_LABELS[result.status_code] ?? "unknown")
+          : "unknown";
       result.events = Array.isArray(d.events)
         ? d.events
             .slice(0, 30)
@@ -321,7 +338,7 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
       protocolVersion:
         typeof requested === "string" && PROTOCOLS.includes(requested) ? requested : PROTOCOLS[0],
       capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "parcel-connection", version: "1.0.1" },
+      serverInfo: { name: "parcel-connection", version: "2.0.0" },
     });
   }
   if (body.method === "ping") return rpc(id, {});
@@ -444,7 +461,7 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
       toolResult({
         source: "Parcel cached API",
         fetched_at: new Date(now).toISOString(),
-        filter_mode: "active",
+        filter_mode: "recent",
         deliveries: cleanDeliveries(payload.deliveries, config.PARCEL_API_KEY),
         truncated: payload.deliveries.length > 200,
       }),

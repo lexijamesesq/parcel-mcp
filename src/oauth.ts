@@ -255,7 +255,17 @@ function consentPage(
   const published = details.clientDomain
     ? `Published by ${escapeHtml(details.clientDomain)}.`
     : "This app registered itself; its name is not verified.";
-  const scopes = scope.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const scopes = scope
+    .map((item) => {
+      const label =
+        item === "active_deliveries_read"
+          ? "Read active and recently completed deliveries"
+          : item === "add_delivery"
+            ? "Add deliveries"
+            : item;
+      return `<li>${escapeHtml(label)}</li>`;
+    })
+    .join("");
   const loopback = details.redirectIsLoopback
     ? "<p><strong>This sends access to an app on your computer.</strong> Continue only if you just started signing in from it.</p>"
     : "";

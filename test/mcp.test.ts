@@ -27,9 +27,14 @@ test("discovery is private-data-free and exposes two read-only tools plus add_de
     fetcher: noNetwork,
   });
   const body = await r.json();
+  const retired = await handleMcp(call("list_active_deliveries"), configured, {
+    identity: owner,
+    fetcher: noNetwork,
+  });
+  assert.equal((await retired.json()).error.code, -32602);
   assert.deepEqual(
     body.result.tools.map((t) => t.name),
-    ["get_connection_status", "list_active_deliveries", "add_delivery"],
+    ["get_connection_status", "list_deliveries", "add_delivery"],
   );
   assert.ok(body.result.tools.every((t) => !t.annotations.destructiveHint));
   assert.ok(
@@ -145,7 +150,7 @@ test("initialization negotiates a supported protocol", async () => {
 });
 
 test("data calls without a verified identity are rejected", async () => {
-  const r = await handleMcp(call("list_active_deliveries"), configured, {
+  const r = await handleMcp(call("list_deliveries"), configured, {
     identity: null,
     fetcher: noNetwork,
   });
@@ -154,7 +159,7 @@ test("data calls without a verified identity are rejected", async () => {
 
 test("a tool call with no identity fails closed", async () => {
   // The worker passes no identity when the access token carried none. That must deny, not allow.
-  const r = await handleMcp(call("list_active_deliveries"), configured, { fetcher: noNetwork });
+  const r = await handleMcp(call("list_deliveries"), configured, { fetcher: noNetwork });
   assert.equal(r.status, 401);
 });
 
@@ -170,12 +175,12 @@ test("an identity without an email is reported as authenticated", async () => {
 
 test("missing secret or missing limiter each fail closed", async () => {
   const noSecret = await handleMcp(
-    call("list_active_deliveries"),
+    call("list_deliveries"),
     {},
     { identity: owner, reserve: async () => null, fetcher: noNetwork },
   );
   assert.equal((await noSecret.json()).result.isError, true);
-  const noLimiter = await handleMcp(call("list_active_deliveries"), configured, {
+  const noLimiter = await handleMcp(call("list_deliveries"), configured, {
     identity: owner,
     fetcher: noNetwork,
   });
@@ -196,7 +201,7 @@ test("status returns identity and booleans only, never the key", async () => {
 
 test("nonempty tool args and mutation names are rejected before any work", async () => {
   for (const [name, args] of [
-    ["list_active_deliveries", { filter_mode: "recent" }],
+    ["list_deliveries", { filter_mode: "recent" }],
     ["add_delivery", {}],
   ]) {
     const r = await handleMcp(call(name, args), configured, {
@@ -209,13 +214,13 @@ test("nonempty tool args and mutation names are rejected before any work", async
 
 test("fixed GET endpoint, no redirects, sanitized fields and no-store", async () => {
   let calls = 0;
-  const r = await handleMcp(call("list_active_deliveries"), configured, {
+  const r = await handleMcp(call("list_deliveries"), configured, {
     identity: owner,
     now: () => 0,
     reserve: async () => null,
     fetcher: async (url, opts) => {
       calls++;
-      assert.equal(url, "https://api.parcel.app/external/deliveries/?filter_mode=active");
+      assert.equal(url, "https://api.parcel.app/external/deliveries/?filter_mode=recent");
       assert.equal(opts.method, "GET");
       assert.equal(opts.redirect, "manual");
       assert.equal(opts.headers["api-key"], configured.PARCEL_API_KEY);
@@ -230,6 +235,11 @@ test("fixed GET endpoint, no redirects, sanitized fields and no-store", async ()
             extra_information: "private@example.test",
             events: [],
           },
+          { status_code: 0, events: [{ event: "Delivered", date: "2026-11-11" }] },
+          { status_code: 1, events: [] },
+          { status_code: 99, events: [] },
+          { status_code: "0", events: [] },
+          { events: [] },
         ],
       });
     },
@@ -239,11 +249,17 @@ test("fixed GET endpoint, no redirects, sanitized fields and no-store", async ()
   const data = await decode(r);
   assert.equal(data.deliveries[0].description, "Test [redacted]");
   assert.ok(!("extra_information" in data.deliveries[0]));
-  assert.equal(data.filter_mode, "active");
+  assert.equal(data.filter_mode, "recent");
+  assert.deepEqual(
+    data.deliveries.map((d) => d.status_label),
+    ["in_transit", "completed", "frozen", "unknown", "unknown", "unknown"],
+  );
+  assert.equal(data.deliveries[1].status_code, 0);
+  assert.equal(data.deliveries[1].events[0].event, "Delivered");
 });
 
 test("rate-limited calls do not contact Parcel", async () => {
-  const r = await handleMcp(call("list_active_deliveries"), configured, {
+  const r = await handleMcp(call("list_deliveries"), configured, {
     identity: owner,
     now: () => 0,
     reserve: async () => MIN_INTERVAL_MS,
@@ -255,7 +271,7 @@ test("rate-limited calls do not contact Parcel", async () => {
 
 test("upstream errors never echo server data or secrets", async () => {
   for (const status of [401, 429, 500]) {
-    const r = await handleMcp(call("list_active_deliveries"), configured, {
+    const r = await handleMcp(call("list_deliveries"), configured, {
       identity: owner,
       reserve: async () => null,
       fetcher: async () => new Response("mock-only-api-value", { status }),
@@ -267,7 +283,7 @@ test("upstream errors never echo server data or secrets", async () => {
 });
 
 test("cross-origin browser calls are rejected", async () => {
-  const r = call("list_active_deliveries");
+  const r = call("list_deliveries");
   r.headers.set("Origin", "https://other.example.test");
   assert.equal(
     (await handleMcp(r, configured, { identity: owner, fetcher: noNetwork })).status,
@@ -282,7 +298,7 @@ test("large bodies and invalid upstream payloads fail safely", async () => {
     body: "x".repeat(9000),
   });
   assert.equal((await handleMcp(huge, configured, { identity: owner })).status, 400);
-  const r = await handleMcp(call("list_active_deliveries"), configured, {
+  const r = await handleMcp(call("list_deliveries"), configured, {
     identity: owner,
     reserve: async () => null,
     fetcher: async () =>
@@ -321,7 +337,7 @@ test("diagnostics distinguish failures without echoing exception or response con
       "UPSTREAM_REPORTED_ERROR",
     ],
   ]) {
-    const r = await handleMcp(call("list_active_deliveries"), configured, {
+    const r = await handleMcp(call("list_deliveries"), configured, {
       identity: owner,
       reserve: async () => null,
       fetcher,

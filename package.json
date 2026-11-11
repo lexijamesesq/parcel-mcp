@@ -1,6 +1,6 @@
 {
   "name": "parcel-mcp",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "description": "An MCP server that exposes your Parcel app's deliveries to any MCP client. The Worker is an OAuth 2.1 authorization server; Cloudflare Access approves each grant.",
   "type": "module",
   "private": false,
