@@ -92,6 +92,33 @@ Deployment uses the configured GitHub environment and Cloudflare's SHA-pinned Wr
 
 For a new release, update `package.json`, the root package entry and version in `package-lock.json`, the MCP `serverInfo.version` in `src/mcp.ts`, and `CHANGELOG.md`. Existing tags are never moved. Dependency or documentation changes that leave the version unchanged do not create another release. Forks must supply their own deployment settings; estate-specific shared PR governance is separate from this Worker delivery workflow.
 
+### Tool changes and client validation
+
+Keep tool names and compatible schemas stable where practical. Before renaming or
+removing a tool, choose and document either a temporary compatibility window with
+an explicit removal release or a breaking cutover. State the affected names,
+client refresh steps, and whether existing grants remain valid. Version 2 uses a
+breaking cutover without an alias for `list_active_deliveries`.
+
+A successful deployment does not prove that an existing client has refreshed its
+tool catalog. For a changed tool contract, verify the intended client's discovery
+and make an authorized call to the changed tool through that client. Check the
+result relevant to the change; `get_connection_status` or a direct HTTP probe
+cannot substitute for that call. Record the release, client/version, and observed
+outcome without delivery contents or credentials. If the client is unavailable,
+report the release as deployed with client validation outstanding.
+
+Use the least invasive call that proves the change, respecting Parcel's quotas.
+Do not create a delivery just for a routine release check; a write requires
+explicit authorization. Documentation-only changes need no live delivery call.
+
+If the client still exposes a retired name or returns `Unknown tool`, refresh its
+tool catalog using a supported client control. If none is available, restart the
+client and check discovery again. Reauthorization is not a catalog-refresh step.
+This server does not currently send tool-list change notifications. Add that
+capability only after a persistent-client test demonstrates notification receipt,
+rediscovery, and a successful call using the updated tools.
+
 ## Operations and recovery
 
 - After deployment, confirm the workflow's verification and deployment jobs succeeded, inspect the active Worker version in Cloudflare, and call `get_connection_status` using an already authorized client. This does not spend Parcel's read allowance. Check source release separately. No delivery write is needed for a routine smoke check.

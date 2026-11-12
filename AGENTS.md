@@ -114,6 +114,13 @@ There is no manual deploy path from a workstation. The OAuth variable has to
 exist before a deploy of this Worker, or the workflow fails and the previous
 version keeps serving.
 
+For tool-contract changes, follow README's "Tool changes and client validation"
+procedure before declaring client behavior verified. Deployment checks and the
+routine status smoke check do not replace discovery and an authorized invocation
+of the changed tool from the intended client. Report any outstanding client
+validation explicitly. Use a minimally invasive call; do not initiate consent,
+install another client, or write a delivery without authorization.
+
 Regenerate binding declarations after config changes with
 `npx wrangler types --include-runtime false`.
 
