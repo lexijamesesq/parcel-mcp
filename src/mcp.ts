@@ -3,7 +3,7 @@ import { type EventReply, READ_SCOPE } from "./events.ts";
 
 // Core MCP handler for the Parcel connection. Framework-agnostic and transport-agnostic:
 // handleMcp(request, config, deps) takes a standard Request, configuration, and injectable
-// dependencies (approved identity, optional OAuth scopes, fetch, clock, rate reservation).
+// dependencies (approved identity, optional OAuth scopes, fetch, clock, coordinated reads).
 // src/oauth.ts validates the access token and wires those dependencies; the test suite injects
 // mocks and never touches the network.
 //

@@ -1,6 +1,13 @@
 import { boundedBody, isObject } from "./body.ts";
 import type { ToolResult } from "./mcp.ts";
-import { type Delivery, deliveryKey, READ_INTERVAL_MS, type Snapshot } from "./rate.ts";
+import {
+  type Delivery,
+  deliveryKey,
+  freshSnapshot,
+  hasDeliveryStatus,
+  READ_INTERVAL_MS,
+  type Snapshot,
+} from "./rate.ts";
 
 const EVENT_NAME = "notifications.test";
 const LIFETIME_MS = 60 * 60_000;
@@ -444,16 +451,7 @@ export class EventSubscriptions {
   private observeRecords(records: Subscription[], snapshot: Snapshot) {
     const current = new Map(
       snapshot.deliveries
-        .filter(
-          (d): d is Delivery =>
-            typeof d.carrier_code === "string" &&
-            typeof d.tracking_number === "string" &&
-            typeof d.status_code === "number" &&
-            Number.isInteger(d.status_code) &&
-            d.status_code >= 0 &&
-            d.status_code <= 8 &&
-            typeof d.change_id === "string",
-        )
+        .filter((d): d is Delivery => hasDeliveryStatus(d) && typeof d.change_id === "string")
         .map((d) => [deliveryKey(d), d]),
     );
     for (const record of records) {
@@ -521,7 +519,8 @@ export class EventSubscriptions {
     let records = await this.load();
     const active: Subscription[] = [];
     for (const record of records) {
-      // Authorization failures stop monitoring until the next bounded attempt.
+      // Remove revoked grants; retain records if the authorization service is unavailable.
+      // Both reading and delivery still require a successful authorization check.
       try {
         if (await this.deps.authorized(record.owner)) active.push(record);
       } catch {
@@ -543,12 +542,8 @@ export class EventSubscriptions {
       }
       if (allowed.some((record) => record.expires > this.now()) && this.deps.read) {
         const result = await this.deps.read();
-        if (
-          !result.isError &&
-          isObject(result.structuredContent) &&
-          result.structuredContent.stale === false
-        )
-          this.observeRecords(records, result.structuredContent as Snapshot);
+        const snapshot = freshSnapshot(result);
+        if (snapshot) this.observeRecords(records, snapshot);
       }
     }
     for (const record of records) {
@@ -609,7 +604,10 @@ export class EventSubscriptions {
               status: response.status,
             }),
           );
-        if (response.status === 410 || (response.status >= 300 && response.status < 400))
+        if (
+          record.follow &&
+          (response.status === 410 || (response.status >= 300 && response.status < 400))
+        )
           records = records.filter((item) => item.id !== record.id);
         if (
           response.ok ||

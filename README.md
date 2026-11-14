@@ -189,7 +189,7 @@ For a new release, update `package.json`, the root package entry and version in 
 - After deployment, confirm the workflow's verification and deployment jobs succeeded, inspect the active Worker version in Cloudflare, and call `get_connection_status` using an already authorized client. This does not spend Parcel's read allowance. Check source release separately. No delivery write is needed for a routine smoke check.
 - A client can revoke its own grant using an RFC 7009 form POST to `/oauth/token` with its `client_id`, `token` (refresh token), and `token_type_hint=refresh_token`, plus its registered client authentication method if applicable. Use the client's secure credential storage; never put tokens into command history or logs. Revoking the refresh token removes that grant and its access tokens. There is no operator revocation UI.
 - If a credential is compromised and the client cannot revoke it, contain access at Cloudflare first. Replacing `OAUTH_KV` with an empty namespace and redeploying invalidates **all** clients and grants, requires fresh registration and consent, and must be a deliberate account-wide recovery decision. Do not clear OAuth storage for an ordinary sign-in error. Access policy changes alone do not invalidate existing Worker tokens.
-- For a defective code release, revert the offending change through a PR to redeploy the corrected source. For urgent recovery, an authorized operator can roll back the Worker deployment in Cloudflare, then reconcile `main` before the next deploy. Worker rollback does not restore KV data or revoke grants. See [rollback limitations](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
+- For a defective code release, revert the offending change through a PR to redeploy the corrected source. For urgent recovery, an authorized operator can roll back the Worker deployment in Cloudflare, then reconcile `main` before the next deploy. Worker rollback does not restore KV or Durable Object data or revoke grants. Disable delivery-change watches before reverting to a diagnostic-only release. The cached snapshot and latest-status identities remain in the account object after rollback; if removing that retained data is required, an authorized operator must delete only its `parcel-read` storage key through Cloudflare Data Studio after rollback. Do not delete the object, subscriptions, or OAuth namespace. See [rollback limitations](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
 - Rotate a compromised Parcel API key in Parcel and update the Worker secret through the dashboard. Do not expose its value in a ticket or client configuration.
 - If `add_delivery` times out or reports an uncertain upstream failure, inspect Parcel before retrying. The upstream operation may have succeeded; blindly retrying can duplicate a delivery or spend its daily allowance.
 
@@ -210,11 +210,11 @@ Redirect URLs must be `https`, loopback `http` (`localhost`, `127.0.0.1`, `::1`)
 
 | Path | Role |
 | --- | --- |
-| `src/mcp.ts` | Transport-agnostic MCP core: protocol handling, the tools, response filtering, key redaction, safe error classification. The caller passes the approved identity, fetch, clock, and rate reservation. |
+| `src/mcp.ts` | Transport-agnostic MCP core: protocol handling, the tools, response filtering, key redaction, safe error classification. The caller passes the approved identity, fetch, clock, and coordinated delivery reads. |
 | `src/oauth.ts` | OAuth provider wiring, token lifetimes, `/authorize` consent, and the `/mcp` bearer check. |
 | `src/access.ts` | Verifies the Cloudflare Access JWT on `/authorize` with [`jose`](https://github.com/panva/jose). |
 | `src/events.ts`, `src/account.ts` | Delivery and diagnostic event lifecycle, shared reader, and persistent account object. |
-| `src/rate.ts` | The KV-backed Parcel read throttle. |
+| `src/rate.ts` | Persisted account read budget, sanitized cache, and latest observed change identities. |
 | `src/index.ts` | Worker entry point. Wires Access, KV, and the Parcel secret. |
 | `test/` | Mock-only tests. No real Parcel key, Access tenant, or network. |
 | `wrangler.json` | Worker configuration. Generic: deployment settings supply the KV and public rate-limit namespace IDs. `global_fetch_strictly_public` and `cache_option_enabled` are required by Client ID Metadata Document fetches. |

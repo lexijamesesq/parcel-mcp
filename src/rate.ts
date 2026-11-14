@@ -9,12 +9,12 @@ const MAX_KNOWN = 1_000;
 const CACHE_BYTES = 750_000;
 const KNOWN_BYTES = 500_000;
 const RETENTION_MS = 30 * 24 * 60 * 60_000;
-export type Delivery = Record<string, unknown> & {
+type StatusDelivery = Record<string, unknown> & {
   carrier_code: string;
   tracking_number: string;
   status_code: number;
-  change_id: string;
 };
+export type Delivery = StatusDelivery & { change_id: string };
 export type Snapshot = {
   fetched_at: string;
   deliveries: Record<string, unknown>[];
@@ -29,6 +29,28 @@ type ReadState = {
 };
 export const deliveryKey = (d: { carrier_code: string; tracking_number: string }) =>
   JSON.stringify([d.carrier_code, d.tracking_number]);
+
+export function hasDeliveryStatus(value: Record<string, unknown>): value is StatusDelivery {
+  return (
+    typeof value.carrier_code === "string" &&
+    typeof value.tracking_number === "string" &&
+    typeof value.status_code === "number" &&
+    Number.isInteger(value.status_code) &&
+    value.status_code >= 0 &&
+    value.status_code <= 8
+  );
+}
+
+export function freshSnapshot(result: ToolResult): Snapshot | null {
+  const data = result.structuredContent;
+  return !result.isError &&
+    isObject(data) &&
+    data.stale === false &&
+    typeof data.fetched_at === "string" &&
+    Array.isArray(data.deliveries)
+    ? (data as Snapshot)
+    : null;
+}
 
 /** Called only inside ParcelAccount's serial queue. Persist reservations before I/O,
  * including failed attempts. One configured Parcel account shares this cache and budget. */
@@ -95,17 +117,8 @@ export class ParcelReads {
         : toolResult({ ...error, retry_at: new Date(state.next).toISOString() }, true);
     }
     const deliveries = data.deliveries.filter(isObject).map((d) => {
-      if (
-        typeof d.carrier_code !== "string" ||
-        typeof d.tracking_number !== "string" ||
-        typeof d.status_code !== "number" ||
-        !Number.isInteger(d.status_code) ||
-        d.status_code < 0 ||
-        d.status_code > 8
-      )
-        return d;
-      const identity = { carrier_code: d.carrier_code, tracking_number: d.tracking_number };
-      const key = deliveryKey(identity);
+      if (!hasDeliveryStatus(d)) return d;
+      const key = deliveryKey(d);
       const previous = state.known[key];
       const id =
         previous?.status === d.status_code && previous.seen > now - RETENTION_MS

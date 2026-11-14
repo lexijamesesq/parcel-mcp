@@ -1,8 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
-import { isObject } from "./body.ts";
 import { EventSubscriptions, type Subscriber, sendCallback } from "./events.ts";
 import { eventGrantIsActive, type WorkerEnv } from "./oauth.ts";
-import { ParcelReads, type Snapshot } from "./rate.ts";
+import { freshSnapshot, ParcelReads } from "./rate.ts";
 
 /** Coordinates delivery reads and subscriptions for all clients of this Worker. No Parcel credential is persisted here. */
 export class ParcelAccount extends DurableObject<WorkerEnv> {
@@ -36,12 +35,8 @@ export class ParcelAccount extends DurableObject<WorkerEnv> {
   read() {
     return this.serial(async () => {
       const result = await this.reads.read();
-      if (
-        !result.isError &&
-        isObject(result.structuredContent) &&
-        result.structuredContent.stale === false
-      )
-        await this.subscriptions.observe(result.structuredContent as Snapshot);
+      const snapshot = freshSnapshot(result);
+      if (snapshot) await this.subscriptions.observe(snapshot);
       return result;
     });
   }
