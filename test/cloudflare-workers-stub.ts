@@ -1,6 +1,6 @@
 // Node stand-in for the Workers runtime module the OAuth library imports.
-// The Parcel handlers are plain fetch objects, so this class only has to exist
-// for the library's `instanceof` check. Tests never run inside workerd.
+// Supplies the base context/environment for handler tests and the OAuth library's
+// instanceof check. Storage and network are provided by test fixtures.
 
 export class WorkerEntrypoint {
   ctx: unknown;
@@ -11,3 +11,5 @@ export class WorkerEntrypoint {
     this.env = env;
   }
 }
+
+export class DurableObject extends WorkerEntrypoint {}

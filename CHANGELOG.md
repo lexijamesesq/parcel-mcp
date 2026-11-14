@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.0
+
+- Add authenticated MCP event discovery and a synthetic `notifications.test` subscription for testing client wake behavior without accessing Parcel.
+- Persist subscriptions and bounded signed retries in a SQLite Durable Object; support renewal, expiry, cancellation, and grant revocation checks.
+- Disable automatic traces to keep callback URL paths out of trace storage; retain service logs.
+- Delivery monitoring and background Parcel polling are not included in this release.
+
 ## 2.0.0
 
 - Replace `list_active_deliveries` with `list_deliveries`, always using Parcel's recent view to include recently completed deliveries. No filter argument or old-name alias.

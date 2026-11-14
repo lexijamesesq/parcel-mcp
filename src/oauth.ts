@@ -14,11 +14,15 @@ import {
   authorizationErrorRedirect,
   CimdFetchError,
   type ConsentDescription,
+  getOAuthApi,
   type OAuthHelpers,
   OAuthProvider,
+  type OAuthProviderOptions,
   type OAuthResourceAuth,
 } from "@cloudflare/workers-oauth-provider";
+import type { ParcelAccount } from "./account.ts";
 import { boundedBody } from "./body.ts";
+import { READ_SCOPE, type Subscriber } from "./events.ts";
 import type { Identity } from "./mcp.ts";
 import { handleMcp } from "./mcp.ts";
 
@@ -44,6 +48,7 @@ export const CLIENT_REGISTRATION_TTL_SECONDS = 90 * 24 * 60 * 60;
 export const OAUTH_SCOPES = ["active_deliveries_read", "add_delivery"] as const;
 
 export interface WorkerEnv {
+  PARCEL_ACCOUNT?: DurableObjectNamespace<ParcelAccount>;
   PARCEL_API_KEY?: string;
   OAUTH_KV?: KVNamespace;
   PUBLIC_RATE_LIMIT?: Cloudflare.Env["PUBLIC_RATE_LIMIT"];
@@ -108,7 +113,14 @@ function createProvider(
   target: { origin: string; resource: string },
   deps: WorkerDependencies,
 ): OAuthProvider<WorkerEnv> {
-  return new OAuthProvider<WorkerEnv>({
+  return new OAuthProvider<WorkerEnv>(providerOptions(target, deps));
+}
+
+function providerOptions(
+  target: { origin: string; resource: string },
+  deps: WorkerDependencies,
+): OAuthProviderOptions<WorkerEnv> {
+  return {
     apiRoute: "/mcp",
     apiHandler: {
       fetch: (request, env, ctx) =>
@@ -139,7 +151,7 @@ function createProvider(
     onError({ code, status }) {
       console.warn(JSON.stringify({ source: "parcel-mcp-oauth", status, code }));
     },
-  });
+  };
 }
 
 async function handlePublic(
@@ -292,6 +304,9 @@ async function handleAuthenticatedMcp(
 ): Promise<Response> {
   const identity = identityFrom(ctx.props);
   if (!identity || !ctx.auth) return plain("Authentication required.", 401);
+  const account = env.PARCEL_ACCOUNT;
+  const oauth = env.OAUTH_PROVIDER;
+  const auth = ctx.auth;
   // Scope is checked inside handleMcp against the same request parse that names the tool.
   return handleMcp(
     request,
@@ -302,6 +317,22 @@ async function handleAuthenticatedMcp(
       reserve: deps.reserve,
       fetcher: deps.fetcher,
       now: deps.now,
+      events:
+        account && oauth
+          ? async (method, params) => {
+              const token = await oauth.unwrapToken(auth.token);
+              if (!token?.scope.includes(READ_SCOPE))
+                return {
+                  error: { code: -32001, message: "Subscription authentication unavailable" },
+                };
+              return account.getByName("account").events(method, params, {
+                userId: token.userId,
+                clientId: token.grant.clientId,
+                grantId: token.grantId,
+                resource: auth.audience,
+              });
+            }
+          : undefined,
     },
   );
 }
@@ -347,4 +378,30 @@ function escapeHtml(value: string): string {
 
 function plain(message: string, status: number): Response {
   return new Response(message, { status, headers: textHeaders });
+}
+
+/** Uses the provider's public grant API, never token storage formats or saved bearer tokens. */
+export async function eventGrantIsActive(env: WorkerEnv, owner: Subscriber): Promise<boolean> {
+  const origin = new URL(owner.resource).origin;
+  const api = getOAuthApi(
+    providerOptions({ origin, resource: owner.resource }, { verifyAccess: async () => null }),
+    env,
+  );
+  let cursor: string | undefined;
+  do {
+    const page = await api.listUserGrants(owner.userId, { cursor, limit: 100 });
+    const grant = page.items.find((item) => item.id === owner.grantId);
+    if (grant)
+      return (
+        grant.userId === owner.userId &&
+        grant.clientId === owner.clientId &&
+        grant.scope.includes(READ_SCOPE) &&
+        (grant.expiresAt === undefined || grant.expiresAt > Date.now() / 1000) &&
+        (Array.isArray(grant.resource)
+          ? grant.resource.includes(owner.resource)
+          : grant.resource === owner.resource)
+      );
+    cursor = page.cursor;
+  } while (cursor);
+  return false;
 }

@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
-import { test } from "vitest";
+import { createHash } from "node:crypto";
+import { test, vi } from "vitest";
+import { ParcelAccount } from "../src/account.ts";
+import type { Subscriber } from "../src/events.ts";
 import { ADD_ENDPOINT } from "../src/mcp.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   CLIENT_REGISTRATION_TTL_SECONDS,
+  eventGrantIsActive,
   handleWorkerRequest,
   REFRESH_GRANT_TTL_SECONDS,
   type WorkerEnv,
@@ -650,5 +654,135 @@ test("token and consent bodies are bounded even without Content-Length", async (
     const response = await install(workerEnv())(request);
     assert.equal(response.status, 413);
     assert.equal(response.headers.get("Cache-Control"), "no-store");
+  }
+});
+
+test("event requests bind to the issuing grant and revocation stops its authorization", async () => {
+  const env = workerEnv();
+  let subscriber: Subscriber | undefined;
+  env.PARCEL_ACCOUNT = {
+    getByName: () => ({
+      events: async (_method, _params, identity) => {
+        subscriber = identity;
+        return { result: {} };
+      },
+    }),
+  } as WorkerEnv["PARCEL_ACCOUNT"];
+  const call = install(env);
+  const { token, clientId } = await issueToken(call);
+  assert.equal((await call(mcp(token.access_token, "events/list"))).status, 200);
+  assert.ok(subscriber);
+  assert.equal(subscriber.userId, owner.userId);
+  assert.equal(subscriber.clientId, clientId);
+  assert.equal(subscriber.resource, RESOURCE);
+  assert.equal("token" in subscriber, false);
+  assert.equal(await eventGrantIsActive(env, subscriber), true);
+  assert.equal(await eventGrantIsActive(env, { ...subscriber, clientId: "another-client" }), false);
+  assert.equal(
+    await eventGrantIsActive(env, { ...subscriber, resource: "https://other.example.test/mcp" }),
+    false,
+  );
+  assert.ok(env.OAUTH_PROVIDER);
+  await env.OAUTH_PROVIDER.revokeGrant(subscriber.grantId, subscriber.userId);
+  assert.equal(await eventGrantIsActive(env, subscriber), false);
+});
+
+test("unsubscribe during an active alarm cannot be overwritten by the completed send", async () => {
+  const env = workerEnv();
+  const call = install(env);
+  const { token } = await issueToken(call);
+  assert.ok(env.OAUTH_PROVIDER);
+  const summary = await env.OAUTH_PROVIDER.unwrapToken(token.access_token);
+  assert.ok(summary);
+  const subscriber = {
+    userId: summary.userId,
+    clientId: summary.grant.clientId,
+    grantId: summary.grantId,
+    resource: RESOURCE,
+  };
+  // Keep hashing real but settle it in the microtask queue, so the held-send race
+  // does not depend on when Node's crypto thread pool completes a digest.
+  const digest = vi
+    .spyOn(crypto.subtle, "digest")
+    .mockImplementation(
+      async (_algorithm, bytes) =>
+        Uint8Array.from(createHash("sha256").update(Buffer.from(bytes)).digest()).buffer,
+    );
+  let now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  let saved = [];
+  let nextAlarm: number | null = null;
+  const storage = {
+    get: async () => structuredClone(saved),
+    transaction: async (work) =>
+      work({
+        put: async (_key, records) => {
+          saved = structuredClone(records);
+        },
+        setAlarm: async (time) => {
+          nextAlarm = time;
+        },
+        deleteAlarm: async () => {
+          nextAlarm = null;
+        },
+      }),
+  };
+  let releaseSend: () => void = () => {};
+  let startedSend: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    releaseSend = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    startedSend = resolve;
+  });
+  vi.stubGlobal("fetch", async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (body.type === "verification") return Response.json({ challenge: body.challenge });
+    startedSend();
+    await held;
+    return new Response(null, { status: 200 });
+  });
+  const inFlight: Promise<unknown>[] = [];
+  try {
+    const account = new ParcelAccount({ storage } as DurableObjectState, env);
+    const params = {
+      name: "notifications.test",
+      arguments: { test_id: "cancel-during-send" },
+      delivery: {
+        mode: "webhook",
+        url: "https://receiver.example.test/events",
+        secret: `whsec_${Buffer.alloc(32, 7).toString("base64")}`,
+      },
+    };
+    const result = await account.events("events/subscribe", params, subscriber);
+    assert.ok("result" in result);
+    assert.equal(nextAlarm, now + 60_000);
+    now += 60_000;
+    const sending = account.alarm();
+    inFlight.push(sending);
+    await Promise.race([
+      started,
+      sending.then(() => {
+        throw new Error("Alarm completed before reaching callback");
+      }),
+    ]);
+    let cancelled = false;
+    const cancelling = account.events("events/unsubscribe", params, subscriber).then((result) => {
+      cancelled = true;
+      return result;
+    });
+    inFlight.push(cancelling);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(cancelled, false);
+    releaseSend();
+    await Promise.all([sending, cancelling]);
+    assert.deepEqual(saved, []);
+    assert.equal(nextAlarm, null);
+  } finally {
+    releaseSend();
+    await Promise.allSettled(inFlight);
+    clock.mockRestore();
+    digest.mockRestore();
+    vi.unstubAllGlobals();
   }
 });

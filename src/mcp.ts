@@ -1,4 +1,5 @@
-import { boundedBody } from "./body.ts";
+import { boundedBody, isObject } from "./body.ts";
+import { type EventReply, READ_SCOPE } from "./events.ts";
 
 // Core MCP handler for the Parcel connection. Framework-agnostic and transport-agnostic:
 // handleMcp(request, config, deps) takes a standard Request, configuration, and injectable
@@ -106,6 +107,7 @@ export const TOOL_SCOPES: Record<(typeof TOOLS)[number]["name"], string> = {
   add_delivery: "add_delivery",
 };
 export type Dependencies = {
+  events?: (method: string, params: unknown) => Promise<EventReply>;
   /** Approved caller. Omitted or null denies every tool call. */
   identity?: Identity | null;
   /**
@@ -139,8 +141,6 @@ const insufficientScope = (scope: string) =>
       "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${scope}"`,
     },
   );
-const object = (v: unknown): v is Record<string, unknown> =>
-  !!v && typeof v === "object" && !Array.isArray(v);
 const toolResult = (data: unknown, isError = false) => ({
   content: [{ type: "text", text: JSON.stringify(data) }],
   ...(isError ? {} : { structuredContent: data }),
@@ -158,7 +158,7 @@ export function connectionStatus(identity: Identity | null, config: Config) {
 }
 
 function validateAddArguments(args: unknown): Record<string, string> | string {
-  if (!object(args)) return "add_delivery requires tracking_number, carrier_code and description";
+  if (!isObject(args)) return "add_delivery requires tracking_number, carrier_code and description";
   const out: Record<string, string> = {};
   for (const [name, limit] of Object.entries(ADD_FIELDS)) {
     const value = args[name];
@@ -221,7 +221,7 @@ async function addDelivery(fields: Record<string, string>, key: string, fetcher:
     } catch {
       payload = null;
     }
-    if (object(payload) && payload.success === true) {
+    if (isObject(payload) && payload.success === true) {
       return toolResult({
         added: true,
         tracking_number: fields.tracking_number,
@@ -235,7 +235,7 @@ async function addDelivery(fields: Record<string, string>, key: string, fetcher:
         ? "Parcel has reached its daily add-delivery limit (20 per day, including failed attempts). Try again tomorrow."
         : [401, 403].includes(upstream.status)
           ? "Parcel rejected the configured API key."
-          : (object(payload) && redact(payload.error_message)) ||
+          : (isObject(payload) && redact(payload.error_message)) ||
             "Parcel did not accept the delivery.";
     return toolResult(
       {
@@ -243,7 +243,7 @@ async function addDelivery(fields: Record<string, string>, key: string, fetcher:
         error_code:
           upstream.status === 429
             ? "UPSTREAM_RATE_LIMITED"
-            : object(payload)
+            : isObject(payload)
               ? "UPSTREAM_REPORTED_ERROR"
               : "UPSTREAM_HTTP_ERROR",
         upstream_status: upstreamStatus,
@@ -272,7 +272,7 @@ function cleanDeliveries(deliveries: unknown[], key: string) {
     typeof v === "string" ? v.replaceAll(key, "[redacted]").slice(0, limit) : undefined;
   return deliveries
     .slice(0, 200)
-    .filter(object)
+    .filter(isObject)
     .map((d) => {
       const result: Record<string, unknown> = {};
       for (const name of [
@@ -294,7 +294,7 @@ function cleanDeliveries(deliveries: unknown[], key: string) {
       result.events = Array.isArray(d.events)
         ? d.events
             .slice(0, 30)
-            .filter(object)
+            .filter(isObject)
             .map((e) => {
               const event: Record<string, unknown> = {};
               for (const name of ["event", "date", "location", "additional"])
@@ -323,7 +323,7 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
   } catch {
     return error(null, -32700, "Invalid or oversized JSON", 400);
   }
-  if (!object(body) || body.jsonrpc !== "2.0" || typeof body.method !== "string")
+  if (!isObject(body) || body.jsonrpc !== "2.0" || typeof body.method !== "string")
     return error(null, -32600, "Invalid request", 400);
   const id = body.id ?? null;
   if ("id" in body && typeof id !== "string" && typeof id !== "number" && id !== null)
@@ -332,19 +332,28 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
     return new Response(null, { status: 202, headers: responseHeaders });
   if (!("id" in body)) return new Response(null, { status: 202, headers: responseHeaders });
   if (body.method === "initialize") {
-    const requested = object(body.params) ? body.params.protocolVersion : null;
+    const requested = isObject(body.params) ? body.params.protocolVersion : null;
     return rpc(id, {
       protocolVersion:
         typeof requested === "string" && PROTOCOLS.includes(requested) ? requested : PROTOCOLS[0],
-      capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "parcel-connection", version: "2.0.0" },
+      capabilities: { tools: { listChanged: false }, ...(deps.events ? { events: {} } : {}) },
+      serverInfo: { name: "parcel-connection", version: "2.1.0" },
     });
   }
   if (body.method === "ping") return rpc(id, {});
   if (body.method === "tools/list") return rpc(id, { tools: TOOLS });
+  if (body.method.startsWith("events/") && deps.events) {
+    if (!deps.identity) return error(id, -32001, "Authentication required", 401);
+    if (!deps.authorizedScopes?.includes(READ_SCOPE)) return insufficientScope(READ_SCOPE);
+    try {
+      return json({ jsonrpc: "2.0", id, ...(await deps.events(body.method, body.params)) });
+    } catch {
+      return error(id, -32603, "Event service unavailable");
+    }
+  }
   if (body.method !== "tools/call") return error(id, -32601, "Method not found");
   const params = body.params;
-  if (!object(params) || !TOOLS.some((t) => t.name === params.name))
+  if (!isObject(params) || !TOOLS.some((t) => t.name === params.name))
     return error(id, -32602, "Unknown tool");
   const addFields =
     params.name === "add_delivery" ? validateAddArguments(params.arguments ?? {}) : null;
@@ -352,7 +361,7 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
   if (
     !addFields &&
     params.arguments !== undefined &&
-    (!object(params.arguments) || Object.keys(params.arguments).length)
+    (!isObject(params.arguments) || Object.keys(params.arguments).length)
   )
     return error(id, -32602, "This tool accepts no arguments");
 
@@ -439,14 +448,14 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
     const text = await boundedText(upstream, 2_000_000);
     phase = "parse_response";
     const payload: unknown = JSON.parse(text);
-    if (!object(payload) || payload.success !== true || !Array.isArray(payload.deliveries))
+    if (!isObject(payload) || payload.success !== true || !Array.isArray(payload.deliveries))
       return rpc(
         id,
         toolResult(
           {
             error: "Parcel did not return a valid successful delivery response.",
             error_code:
-              object(payload) && payload.success === false
+              isObject(payload) && payload.success === false
                 ? "UPSTREAM_REPORTED_ERROR"
                 : "UPSTREAM_INVALID_SCHEMA",
             upstream_status: upstreamStatus,

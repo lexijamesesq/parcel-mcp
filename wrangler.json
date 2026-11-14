@@ -13,8 +13,7 @@
     "enabled": true,
     "redact_query_string": true,
     "traces": {
-      "enabled": true,
-      "head_sampling_rate": 0.1
+      "enabled": false
     }
   },
   "kv_namespaces": [
@@ -35,6 +34,22 @@
         "limit": 60,
         "period": 60
       }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "PARCEL_ACCOUNT",
+        "class_name": "ParcelAccount"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ParcelAccount"
+      ]
     }
   ]
 }

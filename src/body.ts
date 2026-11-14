@@ -1,3 +1,6 @@
+export const isObject = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === "object" && !Array.isArray(value);
+
 export async function boundedBody(response: Request | Response, limit: number) {
   if (!response.body) return new Uint8Array(0);
   const reader = response.body.getReader();

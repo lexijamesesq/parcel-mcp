@@ -25,3 +25,5 @@ export default {
     });
   },
 };
+
+export { ParcelAccount } from "./account.ts";
