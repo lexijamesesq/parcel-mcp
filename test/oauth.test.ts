@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
+import type { Subscriber } from "../src/events.ts";
 import { ADD_ENDPOINT } from "../src/mcp.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   CLIENT_REGISTRATION_TTL_SECONDS,
+  eventGrantIsActive,
   handleWorkerRequest,
   REFRESH_GRANT_TTL_SECONDS,
   type WorkerEnv,
@@ -651,4 +653,34 @@ test("token and consent bodies are bounded even without Content-Length", async (
     assert.equal(response.status, 413);
     assert.equal(response.headers.get("Cache-Control"), "no-store");
   }
+});
+
+test("event requests bind to the issuing grant and revocation stops its authorization", async () => {
+  const env = workerEnv();
+  let subscriber: Subscriber | undefined;
+  env.PARCEL_ACCOUNT = {
+    getByName: () => ({
+      events: async (_method, _params, identity) => {
+        subscriber = identity;
+        return { result: {} };
+      },
+    }),
+  } as WorkerEnv["PARCEL_ACCOUNT"];
+  const call = install(env);
+  const { token, clientId } = await issueToken(call);
+  assert.equal((await call(mcp(token.access_token, "events/list"))).status, 200);
+  assert.ok(subscriber);
+  assert.equal(subscriber.userId, owner.userId);
+  assert.equal(subscriber.clientId, clientId);
+  assert.equal(subscriber.resource, RESOURCE);
+  assert.equal("token" in subscriber, false);
+  assert.equal(await eventGrantIsActive(env, subscriber), true);
+  assert.equal(await eventGrantIsActive(env, { ...subscriber, clientId: "another-client" }), false);
+  assert.equal(
+    await eventGrantIsActive(env, { ...subscriber, resource: "https://other.example.test/mcp" }),
+    false,
+  );
+  assert.ok(env.OAUTH_PROVIDER);
+  await env.OAUTH_PROVIDER.revokeGrant(subscriber.grantId, subscriber.userId);
+  assert.equal(await eventGrantIsActive(env, subscriber), false);
 });

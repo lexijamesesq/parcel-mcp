@@ -27,6 +27,46 @@ Version 2 replaces `list_active_deliveries` with `list_deliveries`; clients must
 tool discovery and update instructions that name the old tool. Existing grants remain
 valid; no reauthorization is required solely for this change.
 
+## Diagnostic events
+
+Clients supporting [MCP Events](https://developers.openai.com/plugins/build/mcp-events)
+can explicitly subscribe to `notifications.test` with a `test_id` containing 1–64
+letters, digits, underscores, or hyphens. The server sends one synthetic event after
+at least 60 seconds. This does not read Parcel, change deliveries, or start delivery
+monitoring. Ordinary MCP clients can continue using the tools without event support.
+
+The authenticated `/mcp` endpoint implements `events/list`, `events/subscribe`, and
+`events/unsubscribe`, requiring `active_deliveries_read`. The client supplies its HTTPS
+callback and Standard Webhooks signing secret through the subscription protocol.
+The server verifies a signed challenge before accepting the subscription. Event data
+contains only `{ "test_id": "your-test-id", "synthetic": true }`.
+
+Subscriptions expire within one hour, or sooner if requested. Renewal preserves the
+original pending event and does not rearm a delivered event. Retries retain the same
+event ID; receivers must deduplicate it. Delivery stops on cancellation, expiry,
+revoked authorization, redirect, or terminal callback rejection. Transient failures
+have at most five attempts. This diagnostic has no replay cursor. A new subscription
+after cancellation or expiry may emit again; use a new test ID for each intentional
+test. The account allows at most 16 active diagnostic subscriptions.
+
+A SQLite Durable Object stores subscription owners, callback URLs, signing secrets,
+and pending diagnostic events. Its alarm survives Worker restarts. Records are removed
+on cancellation or expiry. Grant checks use the OAuth provider's public API before
+delivery; the existing KV propagation limit also applies to revocation here. No bearer
+or refresh token is stored in the Durable Object.
+
+Callback requests require HTTPS, never follow redirects, and use the required
+`global_fetch_strictly_public` flag to reject non-public addresses after DNS resolution.
+[Cloudflare documents this boundary](https://github.com/cloudflare/cloudflare-os/blob/main/packages/gatekeeper-mcp/README.md#notes-and-current-limitations);
+local `wrangler dev` does not establish that production protection. Keep callback URLs
+and signing secrets out of logs and tickets.
+
+To validate a client, refresh its event discovery, explicitly subscribe with a fresh
+test ID, and let the conversation become idle. Confirm the event wakes that same
+conversation, causes a `get_connection_status` read, and can be unsubscribed there.
+Record event/subscription IDs and timing without callback credentials. A successful
+webhook response alone proves receipt, not an agent wake. No delivery write is needed.
+
 ## How it works
 
 ```text
@@ -65,7 +105,7 @@ A native Cloudflare rate limiter also protects public requests before OAuth disp
 
 ## Privacy
 
-Delivery data — tracking numbers, descriptions, events — is personal data. The Worker does not log it, and you should not add logging that does. OAuth error logs record only the HTTP status and the OAuth error code. Query strings are redacted in Worker observability; traces are sampled at 10%. The approving user's email is stored in the encrypted token props, not in the grant's plaintext metadata.
+Delivery data — tracking numbers, descriptions, events — is personal data. The Worker does not log it, and you should not add logging that does. OAuth error logs record only the HTTP status and the OAuth error code. Query strings are redacted in Worker observability. Automatic traces are disabled because outbound fetch spans include callback URL paths, which can contain private identifiers. Invocation and sanitized application logs remain enabled. The approving user's email is stored in the encrypted token props, not in the grant's plaintext metadata.
 
 ## Deploy your own
 
@@ -79,7 +119,7 @@ npm run typecheck
 
 1. Create separate `RATE_LIMIT` and `OAUTH_KV` namespaces in Cloudflare. The first holds read reservations; the second holds clients, grants, and tokens.
 2. Configure the GitHub `default-branch` environment, restricted to `main`, with secret `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit for your account) and variables `CLOUDFLARE_ACCOUNT_ID`, `RATE_LIMIT_KV_NAMESPACE_ID`, `OAUTH_KV_NAMESPACE_ID`, and `PUBLIC_RATE_LIMIT_NAMESPACE_ID`. The workflow fills namespace IDs by binding name; do not commit deployment IDs. Choose an unused positive integer for `PUBLIC_RATE_LIMIT_NAMESPACE_ID`; bindings with the same ID share counters. The public config uses `1` only as a local-development placeholder.
-3. Deploy through the GitHub workflow, then set the Worker secret `PARCEL_API_KEY` in the Cloudflare dashboard. It is never a client credential. Attach exactly one custom hostname, such as `parcel.example.com`; keep `workers_dev` disabled.
+3. Deploy through the GitHub workflow (the declared migration creates the SQLite Durable Object namespace), then set the Worker secret `PARCEL_API_KEY` in the Cloudflare dashboard. It is never a client credential. Attach exactly one custom hostname, such as `parcel.example.com`; keep `workers_dev` disabled.
 4. Create a self-hosted Cloudflare Access application for exactly that hostname's `authorize` path, with an Allow policy restricted to the owner. Do not use `authorize/*`, a whole-host application, or a Service Auth policy. Leave **Managed OAuth disabled**: the Worker provides OAuth discovery and tokens. See [Access paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/) and [Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/).
 5. Set the Worker's plaintext variables `ACCESS_TEAM_DOMAIN` (for example `your-team.cloudflareaccess.com`, without `https://`) and `ACCESS_AUD` (the Access application's AUD tag). `keep_vars` preserves them across deploys. Missing values prevent new grants.
 6. Verify discovery returns JSON with your hostname as `issuer`, unauthenticated `/mcp` returns 401 with protected-resource metadata in its challenge, and `/authorize` requires the owner's Access login. Then connect only the clients you intend to authorize.
@@ -121,6 +161,7 @@ Redirect URLs must be `https`, loopback `http` (`localhost`, `127.0.0.1`, `::1`)
 | `src/mcp.ts` | Transport-agnostic MCP core: protocol handling, the tools, response filtering, key redaction, safe error classification. The caller passes the approved identity, fetch, clock, and rate reservation. |
 | `src/oauth.ts` | OAuth provider wiring, token lifetimes, `/authorize` consent, and the `/mcp` bearer check. |
 | `src/access.ts` | Verifies the Cloudflare Access JWT on `/authorize` with [`jose`](https://github.com/panva/jose). |
+| `src/events.ts`, `src/account.ts` | Diagnostic event lifecycle and its persistent account object. |
 | `src/rate.ts` | The KV-backed Parcel read throttle. |
 | `src/index.ts` | Worker entry point. Wires Access, KV, and the Parcel secret. |
 | `test/` | Mock-only tests. No real Parcel key, Access tenant, or network. |

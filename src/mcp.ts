@@ -1,4 +1,5 @@
 import { boundedBody } from "./body.ts";
+import type { EventReply } from "./events.ts";
 
 // Core MCP handler for the Parcel connection. Framework-agnostic and transport-agnostic:
 // handleMcp(request, config, deps) takes a standard Request, configuration, and injectable
@@ -106,6 +107,7 @@ export const TOOL_SCOPES: Record<(typeof TOOLS)[number]["name"], string> = {
   add_delivery: "add_delivery",
 };
 export type Dependencies = {
+  events?: (method: string, params: unknown) => Promise<EventReply>;
   /** Approved caller. Omitted or null denies every tool call. */
   identity?: Identity | null;
   /**
@@ -336,12 +338,22 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
     return rpc(id, {
       protocolVersion:
         typeof requested === "string" && PROTOCOLS.includes(requested) ? requested : PROTOCOLS[0],
-      capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "parcel-connection", version: "2.0.0" },
+      capabilities: { tools: { listChanged: false }, ...(deps.events ? { events: {} } : {}) },
+      serverInfo: { name: "parcel-connection", version: "2.1.0" },
     });
   }
   if (body.method === "ping") return rpc(id, {});
   if (body.method === "tools/list") return rpc(id, { tools: TOOLS });
+  if (body.method.startsWith("events/") && deps.events) {
+    if (!deps.identity) return error(id, -32001, "Authentication required", 401);
+    if (!deps.authorizedScopes?.includes("active_deliveries_read"))
+      return insufficientScope("active_deliveries_read");
+    try {
+      return json({ jsonrpc: "2.0", id, ...(await deps.events(body.method, body.params)) });
+    } catch {
+      return error(id, -32603, "Event service unavailable");
+    }
+  }
   if (body.method !== "tools/call") return error(id, -32601, "Method not found");
   const params = body.params;
   if (!object(params) || !TOOLS.some((t) => t.name === params.name))
