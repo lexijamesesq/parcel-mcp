@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { test, vi } from "vitest";
 import { ParcelAccount } from "../src/account.ts";
 import type { Subscriber } from "../src/events.ts";
-import { ADD_ENDPOINT } from "../src/mcp.ts";
+import { ADD_ENDPOINT, fetchDeliveries } from "../src/mcp.ts";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   CLIENT_REGISTRATION_TTL_SECONDS,
@@ -12,7 +12,6 @@ import {
   REFRESH_GRANT_TTL_SECONDS,
   type WorkerEnv,
 } from "../src/oauth.ts";
-import { reserveParcelRead } from "../src/rate.ts";
 import { memoryKv } from "./memory-kv.ts";
 
 // Full OAuth and MCP HTTP flow against the worker entry, with a fake Access check and an
@@ -29,17 +28,16 @@ function executionContext(): ExecutionContext {
   return { waitUntil() {}, passThroughOnException() {}, props: {} } as ExecutionContext;
 }
 
-function workerEnv(): WorkerEnv & { RATE_LIMIT: ReturnType<typeof memoryKv> } {
+function workerEnv(): WorkerEnv {
   return {
     PARCEL_API_KEY: "mock-only-api-value",
     OAUTH_KV: memoryKv() as unknown as KVNamespace,
     PUBLIC_RATE_LIMIT: { limit: async () => ({ success: true }) },
-    RATE_LIMIT: memoryKv(),
   };
 }
 
 function install(
-  env: WorkerEnv & { RATE_LIMIT: ReturnType<typeof memoryKv> },
+  env: WorkerEnv,
   fetcher: typeof fetch = () => {
     throw new Error("Network call must not occur");
   },
@@ -49,7 +47,7 @@ function install(
   return (request: Request) =>
     handleWorkerRequest(request, env, executionContext(), {
       verifyAccess,
-      reserve: (now) => reserveParcelRead(env.RATE_LIMIT as unknown as KVNamespace, now),
+      read: () => fetchDeliveries(env.PARCEL_API_KEY ?? "", fetcher, Date.now()),
       fetcher,
     });
 }
@@ -710,14 +708,14 @@ test("unsubscribe during an active alarm cannot be overwritten by the completed 
     );
   let now = Date.now();
   const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-  let saved = [];
+  const saved = new Map<string, unknown>();
   let nextAlarm: number | null = null;
   const storage = {
-    get: async () => structuredClone(saved),
+    get: async (key) => structuredClone(saved.get(key)),
     transaction: async (work) =>
       work({
-        put: async (_key, records) => {
-          saved = structuredClone(records);
+        put: async (key, records) => {
+          saved.set(key, structuredClone(records));
         },
         setAlarm: async (time) => {
           nextAlarm = time;
@@ -776,7 +774,7 @@ test("unsubscribe during an active alarm cannot be overwritten by the completed 
     assert.equal(cancelled, false);
     releaseSend();
     await Promise.all([sending, cancelling]);
-    assert.deepEqual(saved, []);
+    assert.deepEqual(saved.get("subscriptions"), []);
     assert.equal(nextAlarm, null);
   } finally {
     releaseSend();

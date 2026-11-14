@@ -1,15 +1,27 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { ADD_ENDPOINT, handleMcp, MIN_INTERVAL_MS } from "../src/mcp.ts";
+import { ADD_ENDPOINT, handleMcp as coreMcp, fetchDeliveries } from "../src/mcp.ts";
 
 // Identity is supplied by the caller (production: the OAuth access token's stored props). These
-// tests pass that identity directly and mock fetch/reserve; no real network or tokens are involved.
+// tests pass that identity directly and substitute the upstream fetch; no real network or tokens are involved.
 const configured = { PARCEL_API_KEY: "mock-only-api-value" };
 const owner = { userId: "user-123", email: "owner@example.test" };
 const serviceIdentity = { userId: "svc.token.client-id", email: null };
 const noNetwork = () => {
   throw new Error("Network call must not occur");
 };
+
+function handleMcp(request, config, deps = {}) {
+  return coreMcp(request, config, {
+    ...deps,
+    ...(deps.withRead
+      ? {
+          read: () =>
+            fetchDeliveries(config.PARCEL_API_KEY, deps.fetcher, (deps.now ?? Date.now)()),
+        }
+      : {}),
+  });
+}
 
 function request(method, params = {}) {
   return new Request("https://parcel.example.test/mcp", {
@@ -177,7 +189,7 @@ test("missing secret or missing limiter each fail closed", async () => {
   const noSecret = await handleMcp(
     call("list_deliveries"),
     {},
-    { identity: owner, reserve: async () => null, fetcher: noNetwork },
+    { identity: owner, withRead: true, fetcher: noNetwork },
   );
   assert.equal((await noSecret.json()).result.isError, true);
   const noLimiter = await handleMcp(call("list_deliveries"), configured, {
@@ -217,7 +229,7 @@ test("fixed GET endpoint, no redirects, sanitized fields and no-store", async ()
   const r = await handleMcp(call("list_deliveries"), configured, {
     identity: owner,
     now: () => 0,
-    reserve: async () => null,
+    withRead: true,
     fetcher: async (url, opts) => {
       calls++;
       assert.equal(url, "https://api.parcel.app/external/deliveries/?filter_mode=recent");
@@ -258,22 +270,11 @@ test("fixed GET endpoint, no redirects, sanitized fields and no-store", async ()
   assert.equal(data.deliveries[1].events[0].event, "Delivered");
 });
 
-test("rate-limited calls do not contact Parcel", async () => {
-  const r = await handleMcp(call("list_deliveries"), configured, {
-    identity: owner,
-    now: () => 0,
-    reserve: async () => MIN_INTERVAL_MS,
-    fetcher: noNetwork,
-  });
-  const data = await decode(r);
-  assert.equal(data.retry_at, new Date(MIN_INTERVAL_MS).toISOString());
-});
-
 test("upstream errors never echo server data or secrets", async () => {
   for (const status of [401, 429, 500]) {
     const r = await handleMcp(call("list_deliveries"), configured, {
       identity: owner,
-      reserve: async () => null,
+      withRead: true,
       fetcher: async () => new Response("mock-only-api-value", { status }),
     });
     const text = await r.text();
@@ -300,7 +301,7 @@ test("large bodies and invalid upstream payloads fail safely", async () => {
   assert.equal((await handleMcp(huge, configured, { identity: owner })).status, 400);
   const r = await handleMcp(call("list_deliveries"), configured, {
     identity: owner,
-    reserve: async () => null,
+    withRead: true,
     fetcher: async () =>
       Response.json({ success: false, error_message: configured.PARCEL_API_KEY }),
   });
@@ -339,7 +340,7 @@ test("diagnostics distinguish failures without echoing exception or response con
   ]) {
     const r = await handleMcp(call("list_deliveries"), configured, {
       identity: owner,
-      reserve: async () => null,
+      withRead: true,
       fetcher,
     });
     const body = await decode(r);

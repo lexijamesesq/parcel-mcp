@@ -59,7 +59,7 @@ export interface WorkerEnv {
 export type WorkerDependencies = {
   /** Cloudflare Access JWT check. Used only while approving a grant. */
   verifyAccess: (request: Request) => Promise<Identity | null>;
-  reserve?: (now: number) => Promise<number | null>;
+  read?: () => Promise<import("./mcp.ts").ToolResult>;
   fetcher?: typeof fetch;
   now?: () => number;
 };
@@ -314,7 +314,7 @@ async function handleAuthenticatedMcp(
     {
       identity,
       authorizedScopes: ctx.auth.scope,
-      reserve: deps.reserve,
+      read: deps.read ?? (account ? () => account.getByName("account").read() : undefined),
       fetcher: deps.fetcher,
       now: deps.now,
       events:

@@ -15,7 +15,6 @@ import { type EventReply, READ_SCOPE } from "./events.ts";
 
 const ENDPOINT = "https://api.parcel.app/external/deliveries/?filter_mode=recent";
 const ADD_ENDPOINT = "https://api.parcel.app/external/add-delivery/";
-const MIN_INTERVAL_MS = 180_001;
 const PROTOCOLS = ["2025-06-18", "2025-03-26", "2024-11-05"];
 // Parcel's documented status codes; unknown values never imply completion.
 const STATUS_LABELS: Record<number, string> = {
@@ -75,7 +74,7 @@ const TOOLS = [
   {
     name: "list_deliveries",
     description:
-      "Read active and recently completed Parcel deliveries for the configured account (recent view, not full history). Completion requires status_code 0; disappearance from the list does not prove delivery. Parcel returns cached information; this does not refresh carriers. No arguments or write actions. Reads use a best-effort three-minute throttle; extra tracking information is excluded.",
+      "Read active and recently completed Parcel deliveries for the configured account (recent view, not full history). Completion requires status_code 0; disappearance from the list does not prove delivery. Parcel returns cached information; this does not refresh carriers. No arguments or write actions. Reads share a persisted five-minute cache and account budget with event monitoring. Observation age describes our cached read, not carrier freshness. change_id identifies the latest observed status change for notification reconciliation; extra tracking information is excluded.",
     inputSchema: EMPTY_SCHEMA,
     annotations: {
       readOnlyHint: true,
@@ -118,7 +117,7 @@ export type Dependencies = {
   authorizedScopes?: readonly string[];
   fetcher?: typeof fetch;
   now?: () => number;
-  reserve?: (now: number) => Promise<number | null>;
+  read?: () => Promise<ToolResult>;
 };
 
 const responseHeaders = {
@@ -141,7 +140,7 @@ const insufficientScope = (scope: string) =>
       "WWW-Authenticate": `Bearer error="insufficient_scope", scope="${scope}"`,
     },
   );
-const toolResult = (data: unknown, isError = false) => ({
+export const toolResult = (data: unknown, isError = false) => ({
   content: [{ type: "text", text: JSON.stringify(data) }],
   ...(isError ? {} : { structuredContent: data }),
   isError,
@@ -337,7 +336,7 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
       protocolVersion:
         typeof requested === "string" && PROTOCOLS.includes(requested) ? requested : PROTOCOLS[0],
       capabilities: { tools: { listChanged: false }, ...(deps.events ? { events: {} } : {}) },
-      serverInfo: { name: "parcel-connection", version: "2.1.0" },
+      serverInfo: { name: "parcel-connection", version: "2.2.0" },
     });
   }
   if (body.method === "ping") return rpc(id, {});
@@ -383,32 +382,37 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
     return rpc(id, toolResult({ error: "The Parcel API secret is not configured." }, true));
   if (addFields)
     return rpc(id, await addDelivery(addFields, config.PARCEL_API_KEY, deps.fetcher ?? fetch));
-  if (!deps.reserve)
-    return rpc(id, toolResult({ error: "The request rate limiter is unavailable." }, true));
-  const now = (deps.now ?? Date.now)();
+  if (!deps.read)
+    return rpc(id, toolResult({ error: "The delivery coordinator is unavailable." }, true));
   try {
-    const retryAt = await deps.reserve(now);
-    if (retryAt !== null)
-      return rpc(
-        id,
-        toolResult(
-          {
-            error: "Please wait before another Parcel lookup.",
-            retry_at: new Date(retryAt).toISOString(),
-          },
-          true,
-        ),
-      );
+    return rpc(id, await deps.read());
   } catch {
-    return rpc(id, toolResult({ error: "The request rate limiter is unavailable." }, true));
+    return rpc(id, toolResult({ error: "The delivery coordinator is unavailable." }, true));
   }
+}
+
+function retryAfter(value: string | null, now: number): number {
+  if (!value) return now;
+  const seconds = Number(value);
+  const time = Number.isFinite(seconds) ? now + Math.max(0, seconds) * 1000 : Date.parse(value);
+  return Number.isFinite(time) ? Math.min(8_640_000_000_000_000, Math.max(now, time)) : now;
+}
+
+export type ToolResult = ReturnType<typeof toolResult>;
+
+/** Shared sanitized upstream boundary; only the account coordinator calls this in production. */
+export async function fetchDeliveries(
+  key: string,
+  fetcher: typeof fetch,
+  now: number,
+): Promise<ToolResult> {
   let phase = "request";
   let upstreamStatus: number | undefined;
   let responseType: string | undefined;
   try {
-    const upstream = await (deps.fetcher ?? fetch)(ENDPOINT, {
+    const upstream = await fetcher(ENDPOINT, {
       method: "GET",
-      headers: { "api-key": config.PARCEL_API_KEY, Accept: "application/json" },
+      headers: { "api-key": key, Accept: "application/json" },
       redirect: "manual",
       signal: AbortSignal.timeout(15000),
     });
@@ -429,19 +433,19 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
           : [401, 403].includes(upstream.status)
             ? "Parcel rejected the configured API key."
             : "Parcel is temporarily unavailable.";
-      return rpc(
-        id,
-        toolResult(
-          {
-            error: message,
-            error_code:
-              upstream.status >= 300 && upstream.status < 400
-                ? "UPSTREAM_REDIRECT_REJECTED"
-                : "UPSTREAM_HTTP_ERROR",
-            upstream_status: upstreamStatus,
-          },
-          true,
-        ),
+      return toolResult(
+        {
+          error: message,
+          error_code:
+            upstream.status >= 300 && upstream.status < 400
+              ? "UPSTREAM_REDIRECT_REJECTED"
+              : "UPSTREAM_HTTP_ERROR",
+          upstream_status: upstreamStatus,
+          ...(upstream.status === 429
+            ? { retry_at_ms: retryAfter(upstream.headers.get("Retry-After"), now) }
+            : {}),
+        },
+        true,
       );
     }
     phase = "read_response";
@@ -449,47 +453,38 @@ export async function handleMcp(request: Request, config: Config, deps: Dependen
     phase = "parse_response";
     const payload: unknown = JSON.parse(text);
     if (!isObject(payload) || payload.success !== true || !Array.isArray(payload.deliveries))
-      return rpc(
-        id,
-        toolResult(
-          {
-            error: "Parcel did not return a valid successful delivery response.",
-            error_code:
-              isObject(payload) && payload.success === false
-                ? "UPSTREAM_REPORTED_ERROR"
-                : "UPSTREAM_INVALID_SCHEMA",
-            upstream_status: upstreamStatus,
-          },
-          true,
-        ),
-      );
-    phase = "sanitize_response";
-    return rpc(
-      id,
-      toolResult({
-        source: "Parcel cached API",
-        fetched_at: new Date(now).toISOString(),
-        filter_mode: "recent",
-        deliveries: cleanDeliveries(payload.deliveries, config.PARCEL_API_KEY),
-        truncated: payload.deliveries.length > 200,
-      }),
-    );
-  } catch (caught) {
-    // Classify locally, without returning exception text, response bodies, headers, or credentials.
-    return rpc(
-      id,
-      toolResult(
+      return toolResult(
         {
-          error: "Parcel could not be reached or returned an invalid response.",
-          error_code: classifyFailure(caught, phase),
-          phase,
+          error: "Parcel did not return a valid successful delivery response.",
+          error_code:
+            isObject(payload) && payload.success === false
+              ? "UPSTREAM_REPORTED_ERROR"
+              : "UPSTREAM_INVALID_SCHEMA",
           upstream_status: upstreamStatus,
-          response_type: responseType,
         },
         true,
-      ),
+      );
+    phase = "sanitize_response";
+    return toolResult({
+      source: "Parcel cached API",
+      fetched_at: new Date(now).toISOString(),
+      filter_mode: "recent",
+      deliveries: cleanDeliveries(payload.deliveries, key),
+      truncated: payload.deliveries.length > 200,
+    });
+  } catch (caught) {
+    // Classify locally, without returning exception text, response bodies, headers, or credentials.
+    return toolResult(
+      {
+        error: "Parcel could not be reached or returned an invalid response.",
+        error_code: classifyFailure(caught, phase),
+        phase,
+        upstream_status: upstreamStatus,
+        response_type: responseType,
+      },
+      true,
     );
   }
 }
 
-export { ADD_ENDPOINT, ENDPOINT, MIN_INTERVAL_MS };
+export { ADD_ENDPOINT, ENDPOINT };
