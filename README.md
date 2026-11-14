@@ -105,7 +105,7 @@ A native Cloudflare rate limiter also protects public requests before OAuth disp
 
 ## Privacy
 
-Delivery data — tracking numbers, descriptions, events — is personal data. The Worker does not log it, and you should not add logging that does. OAuth error logs record only the HTTP status and the OAuth error code. Query strings are redacted in Worker observability. Automatic traces are disabled because outbound fetch spans include callback URL paths, which can contain private identifiers. Invocation and sanitized application logs remain enabled. The approving user's email is stored in the encrypted token props, not in the grant's plaintext metadata.
+Delivery data — tracking numbers, descriptions, events — is personal data. The Worker does not log it, and you should not add logging that does. OAuth error logs record only the HTTP status and the OAuth error code. Diagnostic delivery failures record an opaque event ID, a fixed failure code, and an HTTP status or processing phase; callback URLs, keys, bodies, and raw exceptions are excluded. Query strings are redacted in Worker observability. Automatic traces are disabled because outbound fetch spans include callback URL paths, which can contain private identifiers. Invocation and sanitized application logs remain enabled. The approving user's email is stored in the encrypted token props, not in the grant's plaintext metadata.
 
 ## Deploy your own
 

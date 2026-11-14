@@ -2,7 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { EventSubscriptions, type Subscriber, sendCallback } from "./events.ts";
 import { eventGrantIsActive, type WorkerEnv } from "./oauth.ts";
 
-/** One account holds this Worker's one upstream credential. All clients share it. */
+/** Stores diagnostic subscriptions for all clients of this Worker. No Parcel credential is persisted here. */
 export class ParcelAccount extends DurableObject<WorkerEnv> {
   private tail: Promise<unknown> = Promise.resolve();
   private readonly subscriptions: EventSubscriptions;

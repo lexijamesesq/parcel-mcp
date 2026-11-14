@@ -56,6 +56,9 @@ function fixture() {
   let service = new EventSubscriptions(deps);
   return {
     received,
+    get now() {
+      return now;
+    },
     get alarm() {
       return alarm;
     },
@@ -118,6 +121,7 @@ test("authenticated diagnostic subscription survives restart and emits one signe
   assert.equal((await f.call("events/list")).result.events[0].name, PARAMS.name);
   const subscribed = (await f.call("events/subscribe")).result;
   assert.ok(subscribed.id);
+  assert.equal(f.alarm, f.now + 60_000);
   verifySignature(f.received[0]);
   assert.equal(f.received[0].headers.get("X-MCP-Subscription-Id"), subscribed.id);
   await f.run();
@@ -156,13 +160,21 @@ test("renewal preserves pending delivery and key rotation signs with old and new
   verifySignature(event, replacement);
 });
 
-test("transient failure retries the same event after restart with a fresh signature; terminal failures stop", async () => {
+test("transient failure retries the same event after restart with a fresh signature; terminal failures stop", async ({
+  onTestFinished,
+}) => {
+  const warnings = vi.spyOn(console, "warn").mockImplementation(() => {});
+  onTestFinished(() => warnings.mockRestore());
   const f = fixture();
   await f.call("events/subscribe");
   f.status(503);
   f.advance();
   await f.run();
   const first = f.received.at(-1);
+  assert.ok(warnings.mock.calls.some(([text]) => JSON.parse(text).status === 503));
+  assert.ok(!JSON.stringify(warnings.mock.calls).includes(SECRET));
+  assert.ok(!JSON.stringify(warnings.mock.calls).includes(PARAMS.delivery.url));
+  assert.equal(f.alarm, f.now + 60_000);
   f.restart();
   f.advance();
   f.status(200);
@@ -182,6 +194,7 @@ test("transient failure retries the same event after restart with a fresh signat
   exhausted.advance(1_000_000);
   await exhausted.run();
   assert.equal(exhausted.received.length, afterLimit);
+  assert.equal(exhausted.alarm, 1_800_000_000_000 + 3_600_000);
   assert.equal(afterLimit, 6); // One verification plus the bounded five delivery attempts.
   for (const status of [410, 413, 302]) {
     const terminal = fixture();

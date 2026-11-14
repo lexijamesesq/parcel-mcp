@@ -1,4 +1,4 @@
-import { boundedBody } from "./body.ts";
+import { boundedBody, isObject } from "./body.ts";
 
 const EVENT_NAME = "notifications.test";
 const LIFETIME_MS = 60 * 60_000;
@@ -8,8 +8,6 @@ const MAX_SUBSCRIPTIONS = 16;
 const MAX_ATTEMPTS = 5;
 const READ_SCOPE = "active_deliveries_read";
 const STATE_KEY = "subscriptions";
-const object = (value: unknown): value is Record<string, unknown> =>
-  !!value && typeof value === "object" && !Array.isArray(value);
 
 export const TEST_EVENT = {
   name: EVENT_NAME,
@@ -177,13 +175,13 @@ export class EventSubscriptions {
     if (method !== "events/subscribe" && method !== "events/unsubscribe")
       return failure(-32601, "Method not found");
     if (
-      !object(params) ||
+      !isObject(params) ||
       params.name !== EVENT_NAME ||
-      !object(params.arguments) ||
+      !isObject(params.arguments) ||
       Object.keys(params.arguments).length !== 1 ||
       typeof params.arguments.test_id !== "string" ||
       !/^[a-zA-Z0-9_-]{1,64}$/.test(params.arguments.test_id) ||
-      !object(params.delivery) ||
+      !isObject(params.delivery) ||
       params.delivery.mode !== "webhook"
     )
       return failure(-32602, "Invalid event arguments");
@@ -261,7 +259,7 @@ export class EventSubscriptions {
           new TextEncoder().encode(challenge),
         );
         if (
-          !object(result) ||
+          !isObject(result) ||
           typeof result.challenge !== "string" ||
           !(await crypto.subtle.verify(
             "HMAC",
@@ -291,6 +289,7 @@ export class EventSubscriptions {
     let records = await this.load();
     for (const record of [...records]) {
       if (record.due === null || record.due > this.now()) continue;
+      let phase = "authorize";
       try {
         if (!(await this.deps.authorized(record.owner))) {
           records = records.filter((item) => item.id !== record.id);
@@ -305,9 +304,20 @@ export class EventSubscriptions {
           data: { test_id: record.testId, synthetic: true },
           cursor: null,
         });
+        phase = "sign";
         const headers = await signedHeaders(record.eventId, record, body, this.now());
+        phase = "send";
         const response = await this.deps.send(record.url, headers, body);
         await response.body?.cancel();
+        if (!response.ok)
+          console.warn(
+            JSON.stringify({
+              source: "parcel-mcp-events",
+              event_id: record.eventId,
+              code: "callback_rejected",
+              status: response.status,
+            }),
+          );
         if (
           response.ok ||
           response.status === 410 ||
@@ -316,7 +326,14 @@ export class EventSubscriptions {
         )
           record.due = null;
       } catch {
-        /* Retry bounded transient failures; never log callback credentials. */
+        console.warn(
+          JSON.stringify({
+            source: "parcel-mcp-events",
+            event_id: record.eventId,
+            code: "delivery_failed",
+            phase,
+          }),
+        );
       }
       record.attempts++;
       if (record.due !== null)
