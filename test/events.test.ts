@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test, vi } from "vitest";
 import { type EventStorage, EventSubscriptions, sendCallback } from "../src/events.ts";
-import { handleMcp } from "../src/mcp.ts";
+import { handleMcp, toolResult } from "../src/mcp.ts";
 
 const SECRET = `whsec_${Buffer.alloc(32, 7).toString("base64")}`;
 const OWNER = {
@@ -19,16 +19,20 @@ const PARAMS = {
 
 function fixture() {
   let now = 1_800_000_000_000;
-  let saved: unknown;
+  const saved = new Map<string, unknown>();
   let alarm: number | null = null;
   let authorized = true;
   let status = 200;
   let challengeValid = true;
+  let reads = 0;
+  let stale = false;
+  let authorizationDelay = 0;
+  let snapshot = { fetched_at: new Date(now).toISOString(), deliveries: [], stale: false };
   const received: { headers: Headers; body: Record<string, unknown>; raw: string }[] = [];
   // Only storage and network are substituted; the real MCP/event handlers own all behavior.
   const transaction = {
-    put: async (_key, value) => {
-      saved = structuredClone(value);
+    put: async (key, value) => {
+      saved.set(key, structuredClone(value));
     },
     setAlarm: async (time) => {
       alarm = time;
@@ -38,13 +42,25 @@ function fixture() {
     },
   };
   const storage = {
-    get: async () => structuredClone(saved),
+    get: async (key) => structuredClone(saved.get(key)),
     transaction: async (callback) => callback(transaction),
   } as EventStorage;
   const deps = {
     storage,
+    random: () => 0,
+    read: async () => {
+      reads++;
+      return toolResult({
+        ...snapshot,
+        fetched_at: stale ? snapshot.fetched_at : new Date(now).toISOString(),
+        stale,
+      });
+    },
     now: () => now,
-    authorized: async () => authorized,
+    authorized: async () => {
+      now += authorizationDelay;
+      return authorized;
+    },
     send: async (_url, headers, raw) => {
       const body = JSON.parse(raw);
       received.push({ headers: new Headers(headers), body, raw });
@@ -56,6 +72,19 @@ function fixture() {
   let service = new EventSubscriptions(deps);
   return {
     received,
+    get reads() {
+      return reads;
+    },
+    stale: (value) => {
+      stale = value;
+    },
+    delayAuthorization: (ms) => {
+      authorizationDelay = ms;
+    },
+    snapshot: (deliveries) => {
+      snapshot = { fetched_at: new Date(now).toISOString(), deliveries, stale: false };
+    },
+    observe: () => service.observe(snapshot),
     get now() {
       return now;
     },
@@ -266,4 +295,189 @@ test("callback transport refuses to follow redirects", async () => {
   } finally {
     vi.unstubAllGlobals();
   }
+});
+
+const FOLLOW = {
+  ...PARAMS,
+  name: "deliveries.changed",
+  arguments: {
+    deliveries: [{ carrier_code: "ups", tracking_number: "test" }],
+    status_codes: [0, 3, 6, 7],
+  },
+};
+const item = (status_code, change_id) => ({
+  carrier_code: "ups",
+  tracking_number: "test",
+  status_code,
+  change_id,
+});
+const notifications = (f) =>
+  f.received.filter((message) => message.body.name === "deliveries.changed");
+
+test("following starts silently; renewal and restart retain baseline, retry identity, and bounded polling", async () => {
+  const f = fixture();
+  assert.ok((await f.call("events/subscribe", FOLLOW)).result);
+  f.snapshot([item(6, "initial")]);
+  f.advance();
+  await f.run();
+  assert.equal(notifications(f).length, 0);
+  const reads = f.reads;
+  await f.run();
+  assert.equal(f.reads, reads);
+  f.snapshot([item(2, "moving")]);
+  await f.observe();
+  f.restart();
+  await f.call("events/subscribe", FOLLOW);
+  f.snapshot([item(6, "failed-once")]);
+  await f.observe();
+  f.status(503);
+  await f.run();
+  const first = notifications(f)[0];
+  assert.equal(first.body.data.changes[0].change_id, "failed-once");
+  assert.equal(first.body.data.changes[0].previous_status, 2);
+  f.restart();
+  f.status(200);
+  f.advance();
+  await f.run();
+  assert.equal(notifications(f)[1].raw, first.raw);
+  assert.equal(f.reads, reads); // Callback retries consume no extra upstream lookup.
+  await f.call("events/unsubscribe", FOLLOW);
+  f.advance(20 * 60_000);
+  await f.run();
+  assert.equal(f.reads, reads);
+  assert.equal(f.alarm, null);
+});
+
+test("fixed batching excludes superseded or missing deliveries and tracking reuse requires refollow", async () => {
+  const f = fixture();
+  await f.call("events/subscribe", FOLLOW);
+  f.snapshot([item(2, "baseline")]);
+  await f.observe();
+  f.snapshot([item(3, "pickup")]);
+  await f.observe();
+  f.advance(20 * 60_000);
+  f.snapshot([item(0, "completed")]);
+  await f.observe();
+  await f.run();
+  assert.equal(notifications(f).length, 0);
+  f.advance(10 * 60_000 + 1);
+  await f.run();
+  assert.deepEqual(
+    notifications(f)[0].body.data.changes.map((c) => c.change_id),
+    ["completed"],
+  );
+  f.snapshot([item(2, "reused")]);
+  await f.observe();
+  f.snapshot([item(6, "new-shipment")]);
+  await f.observe();
+  await f.run();
+  assert.equal(notifications(f).length, 1);
+  // An independent follow verifies missing is unknown, never a completion.
+  const g = fixture();
+  await g.call("events/subscribe", FOLLOW);
+  g.snapshot([item(2, "baseline")]);
+  await g.observe();
+  g.snapshot([item(3, "pickup")]);
+  await g.observe();
+  g.snapshot([]);
+  await g.observe();
+  g.advance(30 * 60_000);
+  await g.run();
+  assert.equal(notifications(g).length, 0);
+});
+
+test("a superseded failed callback cannot later send obsolete status; revocation and expiry stop monitoring", async () => {
+  const f = fixture();
+  await f.call("events/subscribe", FOLLOW);
+  f.snapshot([item(2, "baseline")]);
+  await f.observe();
+  f.snapshot([item(6, "failed")]);
+  await f.observe();
+  f.status(503);
+  await f.run();
+  const oldId = notifications(f)[0].body.eventId;
+  f.snapshot([item(7, "exception")]);
+  await f.observe();
+  f.status(200);
+  await f.run();
+  assert.notEqual(notifications(f)[1].body.eventId, oldId);
+  assert.deepEqual(
+    notifications(f)[1].body.data.changes.map((c) => c.change_id),
+    ["exception"],
+  );
+  f.authorize(false);
+  f.advance(20 * 60_000);
+  await f.run();
+  assert.equal(f.reads, 0);
+  assert.equal(f.alarm, null);
+  const expired = fixture();
+  await expired.call("events/subscribe", { ...FOLLOW, ttlMs: 30_000 });
+  expired.advance();
+  await expired.run();
+  assert.equal(expired.reads, 0);
+  assert.equal(expired.alarm, null);
+});
+
+test("follow filters are bounded and ordinary scans or unselected categories do not alert", async () => {
+  const f = fixture();
+  for (const args of [
+    { ...FOLLOW.arguments, status_codes: [4] },
+    { ...FOLLOW.arguments, deliveries: [] },
+    { ...FOLLOW.arguments, deliveries: Array(21).fill(FOLLOW.arguments.deliveries[0]) },
+  ]) {
+    assert.equal(
+      (await f.call("events/subscribe", { ...FOLLOW, arguments: args })).error.code,
+      -32602,
+    );
+  }
+  await f.call("events/subscribe", {
+    ...FOLLOW,
+    arguments: { ...FOLLOW.arguments, status_codes: [6] },
+  });
+  f.snapshot([item(2, "baseline")]);
+  await f.observe();
+  f.snapshot([item(4, "out-for-delivery")]);
+  await f.observe();
+  f.snapshot([item(7, "unselected")]);
+  await f.observe();
+  await f.run();
+  assert.equal(notifications(f).length, 0);
+});
+
+test("stale snapshots defer batches until fresh revalidation without spending extra retry reads", async () => {
+  const f = fixture();
+  await f.call("events/subscribe", FOLLOW);
+  f.snapshot([item(2, "initial")]);
+  await f.observe();
+  f.snapshot([item(3, "pickup")]);
+  await f.observe();
+  f.stale(true);
+  f.advance(30 * 60_000);
+  await f.run();
+  assert.equal(notifications(f).length, 0);
+  const checks = f.reads;
+  await f.run();
+  assert.equal(f.reads, checks);
+  assert.ok(f.alarm > f.now);
+  f.stale(false);
+  f.advance(11 * 60_000);
+  await f.run();
+  assert.equal(notifications(f)[0].body.data.changes[0].change_id, "pickup");
+});
+
+test("expiry during authorization cannot spend a read and malformed statuses cannot seed a transition", async () => {
+  const f = fixture();
+  await f.call("events/subscribe", { ...FOLLOW, ttlMs: 100_000 });
+  f.advance();
+  f.delayAuthorization(60_000);
+  await f.run();
+  assert.equal(f.reads, 0);
+  const g = fixture();
+  await g.call("events/subscribe", FOLLOW);
+  g.snapshot([item(1.5, "malformed")]);
+  await g.observe();
+  g.snapshot([item(6, "first-valid")]);
+  await g.observe();
+  await g.run();
+  assert.equal(notifications(g).length, 0);
 });

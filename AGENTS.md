@@ -70,8 +70,7 @@ offline, and deploys happen from GitHub (see CI and deploy).
 
 Nothing deployment-specific is committed. `wrangler.json` is generic; the only
 values a deployment fills in are its namespace ids, which the deploy workflow
-injects from the repository variables `RATE_LIMIT_KV_NAMESPACE_ID` (Parcel read
-throttle) and `OAUTH_KV_NAMESPACE_ID` (OAuth clients, grants, and tokens), and
+injects from the repository variables `OAUTH_KV_NAMESPACE_ID` (OAuth clients, grants, and tokens), and
 `PUBLIC_RATE_LIMIT_NAMESPACE_ID` (public request counters). The numeric `1` in
 `wrangler.json` is a local-development placeholder, replaced during deployment. The
 Worker's runtime values live on Cloudflare, never in this repository:
@@ -108,7 +107,7 @@ additional required PR check. The serialized workflow uses the local
 Deployment runs (`.github/workflows/deploy.yml`): Cloudflare's
 `wrangler-action`, SHA-pinned, in the `default-branch` environment. It reads the
 secret `CLOUDFLARE_API_TOKEN` and the variables `CLOUDFLARE_ACCOUNT_ID`,
-`RATE_LIMIT_KV_NAMESPACE_ID`, `OAUTH_KV_NAMESPACE_ID`, and
+`OAUTH_KV_NAMESPACE_ID`, and
 `PUBLIC_RATE_LIMIT_NAMESPACE_ID` from that environment.
 There is no manual deploy path from a workstation. The OAuth variable has to
 exist before a deploy of this Worker, or the workflow fails and the previous
@@ -120,7 +119,7 @@ Regenerate binding declarations after config changes with
 ## Conventions
 
 - The MCP core (`src/mcp.ts`) is transport-agnostic and takes every side effect
-  (identity, fetch, clock, throttle) as an injected dependency, so tests never
+  (identity, fetch, clock, coordinated reads) as an injected dependency, so tests never
   touch the network. Keep it that way: new behaviour gets a mock in `test/`.
 - Never log or return delivery contents or the Parcel key. Upstream errors are
   classified into `error_code` values; their bodies are never echoed.

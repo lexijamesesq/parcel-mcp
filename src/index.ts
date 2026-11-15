@@ -1,6 +1,5 @@
 import { createAccessVerifier } from "./access.ts";
 import { handleWorkerRequest, type WorkerEnv } from "./oauth.ts";
-import { reserveParcelRead } from "./rate.ts";
 
 // Cloudflare Worker entry point. The Worker is its own OAuth 2.1 authorization server.
 // /mcp accepts only access tokens this Worker issued. Cloudflare Access is checked only
@@ -10,7 +9,6 @@ import { reserveParcelRead } from "./rate.ts";
 export interface Env extends WorkerEnv {
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
-  RATE_LIMIT?: KVNamespace;
 }
 
 export default {
@@ -21,7 +19,6 @@ export default {
         : async () => null;
     return handleWorkerRequest(request, env, ctx, {
       verifyAccess,
-      reserve: (now) => reserveParcelRead(env.RATE_LIMIT, now),
     });
   },
 };

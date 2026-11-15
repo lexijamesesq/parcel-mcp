@@ -27,6 +27,48 @@ Version 2 replaces `list_active_deliveries` with `list_deliveries`; clients must
 tool discovery and update instructions that name the old tool. Existing grants remain
 valid; no reauthorization is required solely for this change.
 
+## Delivery notifications
+
+An event-capable client can subscribe to `deliveries.changed` for explicit package
+identities and selected status categories. No extra follow tools or relay service
+are required. Subscribe with arguments such as:
+
+```json
+{
+  "deliveries": [{ "carrier_code": "ups", "tracking_number": "YOUR_TRACKING_NUMBER" }],
+  "status_codes": [0, 3, 6, 7]
+}
+```
+
+Each subscription follows up to 20 identities. Use values returned by
+`list_deliveries`; identity is the exact carrier and tracking number within the
+configured account. The first observation establishes a silent baseline. Only
+later status changes into the chosen categories notify: completed (0), awaiting
+pickup (3), failed attempt (6), and exception (7). Ordinary scans and ETA changes do
+not notify. Missing records are unknown, never inferred delivered. A completed
+tracking identity that becomes active again requires cancelling and following again.
+
+Failed attempts and exceptions send after observation; pickup and completed changes
+share a fixed 30-minute batch window; delivery may wait longer for fresh
+revalidation. This is not carrier push: Parcel exposes cached
+snapshots. Background checks run no more than six times per hour, only while an
+unexpired, authorized follow exists, and share the read budget below. No catch-up
+burst runs after downtime. Newer observations cancel obsolete pending notifications.
+
+Each event contains bounded `changes` with carrier, tracking number, previous/current
+status, `change_id`, and `observed_at`. That timestamp is when this server observed
+Parcel's cached data, not when the carrier changed status. Before alerting, compare
+against `list_deliveries`, reject stale observations, and deduplicate `change_id`
+across callbacks and daily reconciliation. The tool returns the latest change ID
+with each delivery. Retried envelopes keep the same event ID and payload; replacing
+an obsolete envelope uses a new event ID while retaining surviving change IDs.
+
+Unsubscribe to stop following. To change filters, cancel the old subscription and
+create its replacement. Subscriptions last at most 24 hours; clients must renew before
+`refreshBefore`. Renewal preserves the baseline and pending work. There is no history
+replay; daily reconciliation remains useful after outages or exhausted retries.
+Ordinary MCP clients continue using the tools without event support.
+
 ## Diagnostic events
 
 Clients supporting [MCP Events](https://developers.openai.com/plugins/build/mcp-events)
@@ -47,10 +89,10 @@ event ID; receivers must deduplicate it. Delivery stops on cancellation, expiry,
 revoked authorization, redirect, or terminal callback rejection. Transient failures
 have at most five attempts. This diagnostic has no replay cursor. A new subscription
 after cancellation or expiry may emit again; use a new test ID for each intentional
-test. The account allows at most 16 active diagnostic subscriptions.
+test. The account allows at most 16 active subscriptions across both event types.
 
 A SQLite Durable Object stores subscription owners, callback URLs, signing secrets,
-and pending diagnostic events. Its alarm survives Worker restarts. Records are removed
+pending events, and a sanitized account snapshot. Its alarm survives Worker restarts. Subscription records are removed
 on cancellation or expiry. Grant checks use the OAuth provider's public API before
 delivery; the existing KV propagation limit also applies to revocation here. No bearer
 or refresh token is stored in the Durable Object.
@@ -99,13 +141,23 @@ Token lifetimes live in `src/oauth.ts`: `ACCESS_TOKEN_TTL_SECONDS` (1 hour) and 
 
 ## Rate limiting
 
-The read throttle uses a KV key to target one upstream attempt every three minutes. A visible reservation returns `retry_at` without calling Parcel. KV is eventually consistent and its read/write pair is not atomic: concurrent calls can admit multiple attempts. This is a **best-effort throttle**, not a strict quota. Parcel's own 429 response remains authoritative. Deployments sharing a Parcel API key should share the `RATE_LIMIT` namespace; `OAUTH_KV` is separate.
+The account Durable Object serializes every interactive and background read, stores
+its reservation before fetching, and shares a five-minute cache. At most 12 upstream
+attempts per hour originate from this deployment, including failed attempts. This
+leaves headroom under Parcel's 20/hour limit; it cannot control separate applications
+or deployments using the same API key. Use one deployment per Parcel account.
+
+Failures back off with jitter. A 429 delays requests for at least one hour and honors
+longer `Retry-After` values. During backoff, a prior snapshot older than five minutes is returned with
+`stale: true`, `observation_age_ms`, and `retry_at`; without a snapshot, the tool
+returns an error and retry time. These are local observation ages, not carrier
+freshness guarantees. Retries of event callbacks do not request extra Parcel reads.
 
 A native Cloudflare rate limiter also protects public requests before OAuth dispatch, targeting 60 requests per minute per client IP in each Cloudflare location. Shared egress IPs share this allowance. Cloudflare's counters are approximate; this is abuse mitigation, not a global quota. Denial returns 429 with `Retry-After`; an unavailable binding returns 503. Token and consent POST bodies are limited to 64 KiB; registration retains the provider's 1 MiB limit and MCP requests retain their 8 KiB limit.
 
 ## Privacy
 
-Delivery data — tracking numbers, descriptions, events — is personal data. The Worker does not log it, and you should not add logging that does. OAuth error logs record only the HTTP status and the OAuth error code. Diagnostic delivery failures record an opaque event ID, a fixed failure code, and an HTTP status or processing phase; callback URLs, keys, bodies, and raw exceptions are excluded. Query strings are redacted in Worker observability. Automatic traces are disabled because outbound fetch spans include callback URL paths, which can contain private identifiers. Invocation and sanitized application logs remain enabled. The approving user's email is stored in the encrypted token props, not in the grant's plaintext metadata.
+Delivery data — tracking numbers, descriptions, events — is personal data. The Worker does not log it, and you should not add logging that does. OAuth error logs record only the HTTP status and the OAuth error code. Event delivery failures record an opaque event ID, a fixed failure code, and an HTTP status or processing phase; callback URLs, keys, bodies, and raw exceptions are excluded. Query strings are redacted in Worker observability. Automatic traces are disabled because outbound fetch spans include callback URL paths, which can contain private identifiers. Invocation and sanitized application logs remain enabled. The sanitized delivery snapshot and bounded latest-status identities are persisted in the account object; it is not a delivery-history archive. The approving user's email is stored in the encrypted token props, not in the grant's plaintext metadata.
 
 ## Deploy your own
 
@@ -117,8 +169,8 @@ npm test            # offline tests; no network or credentials
 npm run typecheck
 ```
 
-1. Create separate `RATE_LIMIT` and `OAUTH_KV` namespaces in Cloudflare. The first holds read reservations; the second holds clients, grants, and tokens.
-2. Configure the GitHub `default-branch` environment, restricted to `main`, with secret `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit for your account) and variables `CLOUDFLARE_ACCOUNT_ID`, `RATE_LIMIT_KV_NAMESPACE_ID`, `OAUTH_KV_NAMESPACE_ID`, and `PUBLIC_RATE_LIMIT_NAMESPACE_ID`. The workflow fills namespace IDs by binding name; do not commit deployment IDs. Choose an unused positive integer for `PUBLIC_RATE_LIMIT_NAMESPACE_ID`; bindings with the same ID share counters. The public config uses `1` only as a local-development placeholder.
+1. Create an `OAUTH_KV` namespace for clients, grants, and tokens. The existing account Durable Object holds read reservations; an old `RATE_LIMIT` KV namespace is no longer used. Upgrades do not delete that namespace.
+2. Configure the GitHub `default-branch` environment, restricted to `main`, with secret `CLOUDFLARE_API_TOKEN` (Workers Scripts: Edit for your account) and variables `CLOUDFLARE_ACCOUNT_ID`, `OAUTH_KV_NAMESPACE_ID`, and `PUBLIC_RATE_LIMIT_NAMESPACE_ID`. The workflow fills namespace IDs by binding name; do not commit deployment IDs. Choose an unused positive integer for `PUBLIC_RATE_LIMIT_NAMESPACE_ID`; bindings with the same ID share counters. The public config uses `1` only as a local-development placeholder.
 3. Deploy through the GitHub workflow (the declared migration creates the SQLite Durable Object namespace), then set the Worker secret `PARCEL_API_KEY` in the Cloudflare dashboard. It is never a client credential. Attach exactly one custom hostname, such as `parcel.example.com`; keep `workers_dev` disabled.
 4. Create a self-hosted Cloudflare Access application for exactly that hostname's `authorize` path, with an Allow policy restricted to the owner. Do not use `authorize/*`, a whole-host application, or a Service Auth policy. Leave **Managed OAuth disabled**: the Worker provides OAuth discovery and tokens. See [Access paths](https://developers.cloudflare.com/cloudflare-one/access-controls/policies/app-paths/) and [Managed OAuth](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/managed-oauth/).
 5. Set the Worker's plaintext variables `ACCESS_TEAM_DOMAIN` (for example `your-team.cloudflareaccess.com`, without `https://`) and `ACCESS_AUD` (the Access application's AUD tag). `keep_vars` preserves them across deploys. Missing values prevent new grants.
@@ -137,7 +189,7 @@ For a new release, update `package.json`, the root package entry and version in 
 - After deployment, confirm the workflow's verification and deployment jobs succeeded, inspect the active Worker version in Cloudflare, and call `get_connection_status` using an already authorized client. This does not spend Parcel's read allowance. Check source release separately. No delivery write is needed for a routine smoke check.
 - A client can revoke its own grant using an RFC 7009 form POST to `/oauth/token` with its `client_id`, `token` (refresh token), and `token_type_hint=refresh_token`, plus its registered client authentication method if applicable. Use the client's secure credential storage; never put tokens into command history or logs. Revoking the refresh token removes that grant and its access tokens. There is no operator revocation UI.
 - If a credential is compromised and the client cannot revoke it, contain access at Cloudflare first. Replacing `OAUTH_KV` with an empty namespace and redeploying invalidates **all** clients and grants, requires fresh registration and consent, and must be a deliberate account-wide recovery decision. Do not clear OAuth storage for an ordinary sign-in error. Access policy changes alone do not invalidate existing Worker tokens.
-- For a defective code release, revert the offending change through a PR to redeploy the corrected source. For urgent recovery, an authorized operator can roll back the Worker deployment in Cloudflare, then reconcile `main` before the next deploy. Worker rollback does not restore KV data or revoke grants. See [rollback limitations](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
+- For a defective code release, revert the offending change through a PR to redeploy the corrected source. For urgent recovery, an authorized operator can roll back the Worker deployment in Cloudflare, then reconcile `main` before the next deploy. Worker rollback does not restore KV or Durable Object data or revoke grants. Disable delivery-change watches before reverting to a diagnostic-only release. The cached snapshot and latest-status identities remain in the account object after rollback; if removing that retained data is required, an authorized operator must delete only its `parcel-read` storage key through Cloudflare Data Studio after rollback. Do not delete the object, subscriptions, or OAuth namespace. See [rollback limitations](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
 - Rotate a compromised Parcel API key in Parcel and update the Worker secret through the dashboard. Do not expose its value in a ticket or client configuration.
 - If `add_delivery` times out or reports an uncertain upstream failure, inspect Parcel before retrying. The upstream operation may have succeeded; blindly retrying can duplicate a delivery or spend its daily allowance.
 
@@ -158,11 +210,11 @@ Redirect URLs must be `https`, loopback `http` (`localhost`, `127.0.0.1`, `::1`)
 
 | Path | Role |
 | --- | --- |
-| `src/mcp.ts` | Transport-agnostic MCP core: protocol handling, the tools, response filtering, key redaction, safe error classification. The caller passes the approved identity, fetch, clock, and rate reservation. |
+| `src/mcp.ts` | Transport-agnostic MCP core: protocol handling, the tools, response filtering, key redaction, safe error classification. The caller passes the approved identity, fetch, clock, and coordinated delivery reads. |
 | `src/oauth.ts` | OAuth provider wiring, token lifetimes, `/authorize` consent, and the `/mcp` bearer check. |
 | `src/access.ts` | Verifies the Cloudflare Access JWT on `/authorize` with [`jose`](https://github.com/panva/jose). |
-| `src/events.ts`, `src/account.ts` | Diagnostic event lifecycle and its persistent account object. |
-| `src/rate.ts` | The KV-backed Parcel read throttle. |
+| `src/events.ts`, `src/account.ts` | Delivery and diagnostic event lifecycle, shared reader, and persistent account object. |
+| `src/rate.ts` | Persisted account read budget, sanitized cache, and latest observed change identities. |
 | `src/index.ts` | Worker entry point. Wires Access, KV, and the Parcel secret. |
 | `test/` | Mock-only tests. No real Parcel key, Access tenant, or network. |
 | `wrangler.json` | Worker configuration. Generic: deployment settings supply the KV and public rate-limit namespace IDs. `global_fetch_strictly_public` and `cache_option_enabled` are required by Client ID Metadata Document fetches. |

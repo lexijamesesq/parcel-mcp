@@ -18,10 +18,6 @@
   },
   "kv_namespaces": [
     {
-      "binding": "RATE_LIMIT",
-      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
-    },
-    {
       "binding": "OAUTH_KV",
       "id": "REPLACE_WITH_YOUR_OAUTH_KV_NAMESPACE_ID"
     }
