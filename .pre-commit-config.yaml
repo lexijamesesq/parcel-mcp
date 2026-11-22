@@ -5,7 +5,7 @@ default_stages: [pre-commit]
 
 repos:
   - repo: https://github.com/lexijamesesq/dotty
-    rev: v2026.11.19-2
+    rev: v2026.11.22
     hooks:
       - id: gitleaks-staged
         stages: [pre-commit]
@@ -68,7 +68,7 @@ repos:
         stages: [pre-commit]
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.50.0
+    rev: v0.50.1
     hooks:
       - id: markdownlint
         stages: [pre-commit]
